@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>local.companion.agent</string>
+    <key>CFBundleName</key>
+    <string>Companion</string>
+    <key>CFBundleDisplayName</key>
+    <string>Companion</string>
+    <key>CFBundleExecutable</key>
+    <string>Companion</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Companion listens while you hold ⌃⌥ so you can ask questions by voice. Audio is transcribed on-device and never stored.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Companion controls apps you ask it to — for example playing music in Spotify or opening a tab in Safari.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Companion transcribes your push-to-talk questions with on-device speech recognition only.</string>
+</dict>
+</plist>
