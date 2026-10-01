@@ -9,7 +9,10 @@ Started by the Companion app; run by hand with:
 
 import io
 import json
+import os
 import sys
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -64,7 +67,18 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def exit_with_parent():
+    """Quit when the app that started us goes away (we get re-parented to launchd), so a
+    force-quit or crash never leaves a ~300 MB voice model running in the background."""
+    parent = os.getppid()
+    while True:
+        time.sleep(2)
+        if os.getppid() != parent:
+            os._exit(0)
+
+
 if __name__ == "__main__":
+    threading.Thread(target=exit_with_parent, daemon=True).start()
     kokoro.create("Ready.", voice="bf_emma", speed=1.0, lang="en-gb")  # warm up the model
     print(f"kokoro ready on {PORT}", flush=True)
     HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

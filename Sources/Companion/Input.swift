@@ -110,8 +110,8 @@ final class SpeechInput {
 
         var errorDescription: String? {
             switch self {
-            case .notAuthorized: return "Speech recognition is off for Companion. Enable it in System Settings › Privacy & Security › Speech Recognition."
-            case .microphoneDenied: return "Microphone access is off for Companion. Enable it in System Settings › Privacy & Security › Microphone."
+            case .notAuthorized: return "Speech recognition is off for ZOOBIE. Enable it in System Settings › Privacy & Security › Speech Recognition."
+            case .microphoneDenied: return "Microphone access is off for ZOOBIE. Enable it in System Settings › Privacy & Security › Microphone."
             case .noMicrophone: return "No microphone input is available."
             case .onDeviceUnavailable: return "On-device speech isn't available yet. Turn on Dictation in System Settings › Keyboard to download the model, or type with ⌃⌥Space."
             }

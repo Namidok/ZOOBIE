@@ -25,4 +25,4 @@ for file in kokoro-v1.0.onnx voices-v1.0.bin; do
   fi
 done
 
-echo "Voice ready in $dir — restart Companion to use it."
+echo "Voice ready in $dir — restart ZOOBIE to use it."

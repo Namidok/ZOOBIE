@@ -4,3 +4,4 @@ build/
 .DS_Store
 .ruff_cache/
 __pycache__/
+Resources/AppIcon-preview.png

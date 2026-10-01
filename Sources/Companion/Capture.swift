@@ -11,7 +11,7 @@ enum CaptureError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .noPermission: return "Screen Recording permission is needed to read your screen. Grant it in System Settings › Privacy & Security › Screen & System Audio Recording, then relaunch Companion."
+        case .noPermission: return "Screen Recording permission is needed to read your screen. Grant it in System Settings › Privacy & Security › Screen & System Audio Recording, then relaunch ZOOBIE."
         case .noDisplay: return "Couldn't find the display under the cursor."
         }
     }
@@ -62,7 +62,7 @@ enum ScreenReader {
     /// Takes plain values (not NSScreen) because it runs off the main thread.
     static func capture(displayID: CGDirectDisplayID?, pixelScale: CGFloat) async throws -> CGImage {
         guard CGPreflightScreenCaptureAccess() else {
-            CGRequestScreenCaptureAccess()
+            await Permissions.requestScreenRecordingOnce()
             throw CaptureError.noPermission
         }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -146,6 +146,15 @@ enum Permissions {
             }
         }
 
+        var tccService: String {
+            switch self {
+            case .accessibility: return "Accessibility"
+            case .screenRecording: return "ScreenCapture"
+            case .microphone: return "Microphone"
+            case .speech: return "SpeechRecognition"
+            }
+        }
+
         var settingsURL: URL {
             let anchor: String
             switch self {
@@ -161,5 +170,25 @@ enum Permissions {
     static func promptAccessibility() {
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+    }
+
+    @MainActor private static var askedForScreenRecording = false
+
+    /// macOS's Screen Recording prompt, shown at most once per run (it used to fire on every screen read).
+    @MainActor static func requestScreenRecordingOnce() {
+        guard !askedForScreenRecording else { return }
+        askedForScreenRecording = true
+        CGRequestScreenCaptureAccess()
+    }
+
+    /// Clears a permission macOS is holding for an older build of ZOOBIE. An entry can show as switched on in
+    /// System Settings yet not apply, because it belongs to a previous code signature; after a reset the next
+    /// grant binds to the current, stable signature and survives rebuilds.
+    static func reset(_ kind: Kind) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        process.arguments = ["reset", kind.tccService, Bundle.main.bundleIdentifier ?? "local.companion.agent"]
+        try? process.run()
+        process.waitUntilExit()
     }
 }

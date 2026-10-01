@@ -11,8 +11,8 @@ public enum ClaudeError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .missingKey: return "No Claude API key yet. Add one from the menu bar: Claude API Key…"
-        case .unauthorized: return "Claude rejected the API key. Update it from the menu bar: Claude API Key…"
+        case .missingKey: return "No Claude API key yet. Add one in ZOOBIE’s Settings (hover the notch)."
+        case .unauthorized: return "Claude rejected the API key. Update it in ZOOBIE’s Settings (hover the notch)."
         case .http(let code, let message): return "Claude returned HTTP \(code): \(message)"
         case .network(let error): return "Couldn't reach Claude: \(error.localizedDescription)"
         }
@@ -38,6 +38,8 @@ public struct ClaudeTurn: Sendable {
     public var text: String
     /// Tool calls; `input` is nil when the streamed JSON didn't parse.
     public var toolUses: [(id: String, name: String, input: [String: JSONValue]?)]
+    /// Server tools Anthropic ran this turn (web search/fetch), for progress reporting.
+    public var serverToolUses: [(name: String, input: [String: JSONValue])] = []
     public var stopReason: String?
 }
 
@@ -201,6 +203,7 @@ struct TurnAccumulator {
         }
         var content: [JSONValue] = []
         var toolUses: [(id: String, name: String, input: [String: JSONValue]?)] = []
+        var serverToolUses: [(name: String, input: [String: JSONValue])] = []
         for block in kept {
             switch block.type {
             case "text":
@@ -215,6 +218,14 @@ struct TurnAccumulator {
                 if case .object(let object)? = JSONValue.parse(json) { parsed = object }
                 toolUses.append((id, name, parsed))
                 content.append(.object(["type": .string("tool_use"), "id": .string(id), "name": .string(name), "input": .object(parsed ?? [:])]))
+            case "server_tool_use":
+                // Anthropic runs these (web search/fetch); echo them back with their streamed input.
+                var object = block.start
+                if case .object(let input)? = JSONValue.parse(block.partialJSON.isEmpty ? "{}" : block.partialJSON) {
+                    object["input"] = .object(input)
+                    serverToolUses.append((block.start["name"]?.stringValue ?? "", input))
+                }
+                content.append(.object(object))
             case "thinking":
                 var object: [String: JSONValue] = ["type": .string("thinking"), "thinking": .string(block.thinking)]
                 if let signature = block.signature { object["signature"] = .string(signature) }
@@ -225,7 +236,8 @@ struct TurnAccumulator {
                 content.append(.object(block.start)) // e.g. redacted_thinking: echo exactly as received
             }
         }
-        return ClaudeTurn(content: content, text: kept.filter { $0.type == "text" }.map(\.text).joined(), toolUses: toolUses, stopReason: stopReason)
+        return ClaudeTurn(content: content, text: kept.filter { $0.type == "text" }.map(\.text).joined(), toolUses: toolUses,
+                          serverToolUses: serverToolUses, stopReason: stopReason)
     }
 }
 
@@ -268,22 +280,33 @@ public struct ClaudeAgentLoop: Sendable {
     public var executor: AgentExecutor
     public var maxSteps: Int
     public var policy: ApprovalPolicy
+    public var role: Role
     /// Captures a fresh screen for read_screen.
     public var captureScreen: @Sendable () async -> ScreenCapture?
 
+    public enum Role: Sendable {
+        /// Talks with the user and acts on their Mac in the foreground.
+        case assistant
+        /// A background agent: researches and works without touching the screen, mouse or keyboard.
+        case worker
+    }
+
     public init(client: AnthropicClient, model: String, effort: String, executor: AgentExecutor, maxSteps: Int,
-                policy: ApprovalPolicy, captureScreen: @escaping @Sendable () async -> ScreenCapture?) {
+                policy: ApprovalPolicy, role: Role = .assistant, captureScreen: @escaping @Sendable () async -> ScreenCapture?) {
         self.client = client
         self.model = model
         self.effort = effort
         self.executor = executor
         self.maxSteps = maxSteps
         self.policy = policy
+        self.role = role
         self.captureScreen = captureScreen
     }
 
-    public static var tools: [JSONValue] {
-        AgentTools.definitions.compactMap { definition in
+    /// Client tools in the Messages API shape, plus Anthropic's server-side web tools.
+    public static func tools(for role: Role) -> [JSONValue] {
+        let excluded: Set<String> = role == .worker ? AgentTools.foregroundOnly : []
+        let client: [JSONValue] = AgentTools.definitions(excluding: excluded).compactMap { definition in
             guard case .object(let wrapper) = definition, case .object(let function)? = wrapper["function"] else { return nil }
             return .object([
                 "name": function["name"] ?? .null,
@@ -292,6 +315,12 @@ public struct ClaudeAgentLoop: Sendable {
                 "eager_input_streaming": .bool(true),
             ])
         }
+        let searches: Double = role == .worker ? 12 : 3
+        let server: [JSONValue] = [
+            .object(["type": .string("web_search_20260209"), "name": .string("web_search"), "max_uses": .number(searches)]),
+            .object(["type": .string("web_fetch_20260209"), "name": .string("web_fetch"), "max_uses": .number(searches)]),
+        ]
+        return client + server
     }
 
     /// Returns the final reply text ("" if stopped).
@@ -303,23 +332,34 @@ public struct ClaudeAgentLoop: Sendable {
         confirm: @Sendable (AgentAction) async -> AgentDecision,
         emit: @Sendable (AgentEvent) async -> Void
     ) async throws -> String {
-        let system = Prompts.claude(workingDirectory: executor.workingDirectory, commandTimeout: Int(executor.timeout))
+        let system = role == .worker
+            ? Prompts.worker(workingDirectory: executor.workingDirectory, commandTimeout: Int(executor.timeout))
+            : Prompts.claude(workingDirectory: executor.workingDirectory, commandTimeout: Int(executor.timeout))
+        let tools = Self.tools(for: role)
         var messages: [JSONValue] = history.map { .object(["role": .string($0.role.rawValue), "content": .string($0.content)]) }
         let userContent: JSONValue = screen.map { .array($0.contentBlocks(caption: request)) } ?? .string(request)
         messages.append(.object(["role": .string("user"), "content": userContent]))
 
         for _ in 0..<maxSteps {
             await emit(.turnStarted)
-            let turn = try await client.streamTurn(model: model, effort: effort, system: system, tools: Self.tools, messages: messages) { text in
+            let turn = try await client.streamTurn(model: model, effort: effort, system: system, tools: tools, messages: messages) { text in
                 await emit(.thinking(text))
             }
             try Task.checkCancellation()
             messages.append(.object(["role": .string("assistant"), "content": .array(turn.content)]))
+            for use in turn.serverToolUses {
+                if let query = use.input["query"]?.stringValue { await emit(.research("Searched the web: \(query)")) }
+                else if let url = use.input["url"]?.stringValue { await emit(.research("Read \(url)")) }
+            }
 
             if turn.stopReason == "refusal" {
                 let reply = "I can't help with that one."
                 await emit(.finished(reply))
                 return reply
+            }
+            if turn.stopReason == "pause_turn" {
+                // A long server-side search loop paused; resending the turn as-is resumes it.
+                continue
             }
             if turn.toolUses.isEmpty || turn.stopReason == "max_tokens" {
                 await emit(.finished(turn.text))

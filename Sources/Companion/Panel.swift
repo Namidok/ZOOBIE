@@ -96,7 +96,7 @@ struct PanelView: View {
             Circle()
                 .fill(controller.isBusy ? Color.orange : Color.green)
                 .frame(width: 7, height: 7)
-            Text("Companion").font(.system(size: 12, weight: .semibold))
+            Text("ZOOBIE").font(.system(size: 12, weight: .semibold))
             Text(controller.activeModel ?? controller.config.chatModel)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
@@ -360,7 +360,7 @@ private struct ConfirmCard: View {
 
 /// Lightweight renderer: fenced code blocks become copyable monospaced blocks; the rest uses
 /// SwiftUI's inline markdown with headings and bullets normalised.
-private struct MarkdownView: View {
+struct MarkdownView: View {
     let text: String
 
     private enum Block {

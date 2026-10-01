@@ -7,8 +7,21 @@ public enum AgentTools {
 
     public static let names: Set<String> = [
         "open_app", "run_applescript", "media_control", "click", "type_text", "press_keys", "read_screen",
-        "run_shell", "read_file", "write_file", "list_directory", "open_url",
+        "run_shell", "read_file", "write_file", "list_directory", "open_url", "start_agent",
     ]
+
+    /// Tools that drive the screen, mouse or keyboard. Background agents never get these, so they
+    /// can't interfere with what the user is doing.
+    public static let foregroundOnly: Set<String> = ["click", "type_text", "press_keys", "media_control", "read_screen", "start_agent"]
+
+    /// The definitions minus the named tools.
+    public static func definitions(excluding excluded: Set<String>) -> [JSONValue] {
+        definitions.filter { definition in
+            guard case .object(let wrapper) = definition, case .object(let function)? = wrapper["function"],
+                  let name = function["name"]?.stringValue else { return true }
+            return !excluded.contains(name)
+        }
+    }
 
     public static let definitions: [JSONValue] = [
         tool("open_app", "Launch an app or bring it to the front.", ["name": "App name, e.g. Spotify, Safari, Visual Studio Code."], required: ["name"]),
@@ -30,6 +43,8 @@ public enum AgentTools {
         tool("list_directory", "List the entries of a directory.", ["path": "Absolute path of the directory."], required: ["path"]),
         tool("open_url", "Open a URL or file in its default app, e.g. a web page in the browser.",
              ["url": "The URL or absolute file path to open."], required: ["url"]),
+        tool("start_agent", "Hand a longer job to a background agent (research, comparisons, writing a report, multi-step file work) so the user can keep working. It reports back when done.",
+             ["title": "A short title, 2 to 5 words.", "task": "The full task with everything the agent needs to know."], required: ["title", "task"]),
     ]
 
     private static func tool(_ name: String, _ description: String, _ params: [String: String], required: [String]) -> JSONValue {
@@ -66,6 +81,7 @@ public enum AgentAction: Sendable, Equatable {
     case typeText(String)
     case pressKeys(String)
     case readScreen
+    case startAgent(title: String, task: String)
     case shell(command: String, cwd: String?)
     case readFile(path: String)
     case writeFile(path: String, content: String)
@@ -115,6 +131,9 @@ public enum AgentAction: Sendable, Equatable {
             self = arg("keys").map(AgentAction.pressKeys) ?? missing("keys")
         case "read_screen":
             self = .readScreen
+        case "start_agent":
+            guard let task = arg("task") else { self = missing("task"); return }
+            self = .startAgent(title: arg("title") ?? String(task.prefix(40)), task: task)
         case "run_shell":
             guard let command = arg("command") else { self = missing("command"); return }
             self = .shell(command: command, cwd: arg("cwd"))
@@ -141,6 +160,7 @@ public enum AgentAction: Sendable, Equatable {
         case .typeText: return "Type text"
         case .pressKeys(let keys): return "Press \(keys)"
         case .readScreen: return "Read the screen"
+        case .startAgent(let title, _): return "Start agent: \(title)"
         case .shell: return "Run command"
         case .readFile: return "Read file"
         case .writeFile: return "Write file"
@@ -159,6 +179,7 @@ public enum AgentAction: Sendable, Equatable {
         case .typeText(let text): return text
         case .pressKeys(let keys): return keys
         case .readScreen: return ""
+        case .startAgent(_, let task): return task
         case .shell(let command, let cwd): return cwd.map { "cd \($0) && \(command)" } ?? command
         case .readFile(let path), .listDirectory(let path): return path
         case .writeFile(let path, let content): return "\(path)  (\(content.count) chars)\n\n\(content.prefix(1200))"
@@ -183,7 +204,7 @@ public enum AgentAction: Sendable, Equatable {
         case .appleScript(let script): return Self.matches(Self.riskyScriptPattern, script)
         case .click(let target): return Self.matches(Self.riskyLabelPattern, target)
         case .pressKeys(let keys): return Self.riskyShortcuts.contains(Self.normalizedKeys(keys))
-        case .openApp, .media, .typeText, .readScreen, .readFile, .listDirectory, .openURL, .invalid: return false
+        case .openApp, .media, .typeText, .readScreen, .startAgent, .readFile, .listDirectory, .openURL, .invalid: return false
         }
     }
 
@@ -394,7 +415,7 @@ public struct AgentExecutor: Sendable {
             if result.timedOut { return "AppleScript timed out after \(Int(timeout))s" }
             if result.exitCode != 0 { return Self.explainAppleScriptError(result.output) }
             return result.output.isEmpty ? "Done." : truncate(result.output)
-        case .media, .click, .typeText, .pressKeys, .readScreen:
+        case .media, .click, .typeText, .pressKeys, .readScreen, .startAgent:
             guard let ui else { return "Error: \(action.title) isn't available here." }
             return await ui(action)
         case .shell(let command, let cwd):
@@ -547,6 +568,8 @@ public enum AgentEvent: Sendable {
     case running(AgentAction)
     case output(AgentAction, String)
     case skipped(AgentAction)
+    /// Server-side research progress (web searches and fetches Anthropic ran).
+    case research(String)
     case finished(String)
     case stopped
 }
@@ -588,7 +611,7 @@ public struct AgentLoop: Sendable {
             await emit(.turnStarted)
             var content = ""
             var calls: [ToolCall] = []
-            for try await chunk in client.chat(model: model, messages: messages, tools: AgentTools.definitions, options: options) {
+            for try await chunk in client.chat(model: model, messages: messages, tools: AgentTools.definitions(excluding: ["start_agent"]), options: options) {
                 guard let message = chunk.message else { continue }
                 if let toolCalls = message.toolCalls { calls += toolCalls }
                 if !message.content.isEmpty {

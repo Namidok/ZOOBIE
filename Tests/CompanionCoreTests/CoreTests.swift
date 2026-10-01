@@ -257,11 +257,41 @@ import Testing
     }
 
     @Test func claudeToolsUseAnthropicShape() {
-        let tools = ClaudeAgentLoop.tools
-        #expect(tools.count == AgentTools.names.count)
+        let tools = ClaudeAgentLoop.tools(for: .assistant)
+        #expect(tools.count == AgentTools.names.count + 2) // + web_search, web_fetch
         guard case .object(let first)? = tools.first else { Issue.record("no tools"); return }
         #expect(first["input_schema"] != nil)
         #expect(first["eager_input_streaming"] == .bool(true))
+    }
+
+    @Test func workersNeverGetScreenOrKeyboardTools() {
+        let names = ClaudeAgentLoop.tools(for: .worker).compactMap { tool -> String? in
+            guard case .object(let object) = tool else { return nil }
+            return object["name"]?.stringValue
+        }
+        #expect(names.contains("web_search") && names.contains("run_shell"))
+        for name in AgentTools.foregroundOnly { #expect(!names.contains(name), "\(name)") }
+        guard case .object(let search)? = ClaudeAgentLoop.tools(for: .worker).first(where: {
+            if case .object(let o) = $0 { return o["name"] == .string("web_search") } else { return false }
+        }) else { Issue.record("no web_search"); return }
+        #expect(search["eager_input_streaming"] == nil) // only valid on client tools
+    }
+
+    @Test func agentRunsPersistAndActiveOnesComeBackCancelled() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("zoobie-runs-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let store = AgentRunStore(directory: base.appendingPathComponent("runs"), reportsDirectory: base.appendingPathComponent("reports"))
+        var done = AgentRun(title: "Monitors", task: "Find 4K monitors")
+        done.status = .done
+        done.report = "**The Dell U2723QE** is the best pick.\n\nDetails…"
+        done.reportPath = store.writeReport(done.report!, for: done)
+        store.save(done)
+        store.save(AgentRun(title: "Still going", task: "x"))
+        let loaded = store.load()
+        #expect(loaded.count == 2)
+        #expect(loaded.first { $0.title == "Still going" }?.status == .cancelled)
+        #expect(loaded.first { $0.title == "Monitors" }?.summary == "The Dell U2723QE is the best pick.")
+        #expect(try String(contentsOfFile: done.reportPath!, encoding: .utf8).contains("# Monitors"))
     }
 
     @Test func parsesNewTools() {
@@ -269,6 +299,7 @@ import Testing
         #expect(AgentAction(call: ToolCall(name: "media_control", arguments: ["command": .string("Play_Pause")])) == .media("play_pause"))
         #expect(AgentAction(call: ToolCall(name: "click", arguments: ["target": .number(12)])) == .click(target: "12"))
         #expect(AgentAction(call: ToolCall(name: "read_screen", arguments: [:])) == .readScreen)
+        #expect(AgentAction(call: ToolCall(name: "start_agent", arguments: ["title": .string("Monitors"), "task": .string("Find monitors")])) == .startAgent(title: "Monitors", task: "Find monitors"))
         if case .invalid = AgentAction(call: ToolCall(name: "media_control", arguments: ["command": .string("louder")])) {} else { Issue.record("expected invalid") }
         #expect(AgentAction.normalizedKeys("Shift + Command + T") == "shift+cmd+t")
     }
@@ -484,7 +515,7 @@ final class MockAnthropicProtocol: URLProtocol, @unchecked Sendable {
         let client = AnthropicClient(apiKey: "test-key", session: URLSession(configuration: config))
         let screen = ScreenCapture(promptBlock: "<screen>\n[1] Play\n</screen>", jpegBase64: "AAAA", imageSize: CGSize(width: 1280, height: 800))
         let turn = try await client.streamTurn(
-            model: "claude-opus-5-5", effort: "low", system: "sys", tools: ClaudeAgentLoop.tools,
+            model: "claude-opus-5-5", effort: "low", system: "sys", tools: ClaudeAgentLoop.tools(for: .assistant),
             messages: [.object(["role": .string("user"), "content": .array(screen.contentBlocks(caption: "open spotify"))])]
         ) { _ in }
 

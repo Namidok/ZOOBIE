@@ -18,8 +18,8 @@ struct DisplayMessage: Identifiable {
 
 /// Orchestrates capture → OCR → local model → voice, captions, pointing and highlights. Every request
 /// goes to one tool-using brain: it answers questions and performs actions (risky ones wait for
-/// approval). The cursor buddy and a small card near the cursor are the UI; the full transcript lives
-/// in an optional history panel. State lives only in memory.
+/// approval). The notch (captions, cards, agents, settings) and the cursor pointer are the UI; the full
+/// transcript lives in an optional history panel. State lives only in memory.
 @MainActor
 final class CompanionController: ObservableObject {
     @Published private(set) var messages: [DisplayMessage] = [] {
@@ -34,13 +34,18 @@ final class CompanionController: ObservableObject {
     @Published private(set) var config: CompanionConfig
     @Published private(set) var activeModel: String?
     @Published private(set) var focusToken = 0
+    /// Answers given this session (onboarding's "Try it" step watches it).
+    @Published private(set) var completedRequests = 0
 
     let buddy = BuddyOverlay()
     let voiceServer = VoiceServer()
     private let highlights = HighlightOverlay()
     private let narrator = Narrator()
     private let speechIn = SpeechInput()
-    private lazy var card = CursorCard(controller: self)
+    let agents = AgentManager()
+    private(set) lazy var notch = NotchController(controller: self, agents: agents)
+    /// Opens the first-run setup window (set by the app delegate).
+    var openOnboarding: () -> Void = {}
     private lazy var historyPanel = FloatingPanel(controller: self)
     private var client: OllamaClient
     /// Prior turns without their screen blocks, so follow-ups stay cheap.
@@ -69,6 +74,16 @@ final class CompanionController: ObservableObject {
         speechIn.onLevel = { [weak self] level in self?.buddy.model.push(level: CGFloat(level)) }
         narrator.onStep = { [weak self] step in self?.present(step) }
         narrator.onFinish = { [weak self] in self?.narrationFinished() }
+        buddy.model.showsCaptions = false // captions live in the notch
+        agents.onFinished = { [weak self] run in self?.announce(run) }
+    }
+
+    /// A background agent finished: show it in the notch and say so if nothing else is talking.
+    private func announce(_ run: AgentRun) {
+        notch.toast("\(run.title) — done. Open Agents to read it.")
+        if !isBusy && !narrator.isActive {
+            say("Your agent finished \(run.title). \(run.summary ?? "")")
+        }
     }
 
     var visionModel: String? {
@@ -78,21 +93,21 @@ final class CompanionController: ObservableObject {
 
     func start() {
         buddy.start()
-        if !UserDefaults.standard.bool(forKey: "didOnboard") {
-            UserDefaults.standard.set(true, forKey: "didOnboard")
-            flash("Hi! Hold ⌃⌥ and talk to me, or press ⌃⌥Space to type.", for: 7)
-        }
+        notch.start()
         Task { await refreshModels(warmUp: true) }
         Task { await voiceServer.start() }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.checkSetup(reportIfFine: false) }
+        // During onboarding the setup window covers permissions; afterwards, flag anything that got revoked.
+        if OnboardingController.isComplete {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.checkSetup(reportIfFine: false) }
+        }
     }
 
     /// Shows what's missing for Companion to act (Accessibility and Screen Recording).
     func checkSetup(reportIfFine: Bool) {
         let missing = [Permissions.Kind.accessibility, .screenRecording].filter { !$0.isGranted }
-        log.info("setup check: missing \(missing.map(\.rawValue).joined(separator: ", "), privacy: .public)")
+        log.notice("setup check: missing \(missing.map(\.rawValue).joined(separator: ", "), privacy: .public)")
         if !missing.isEmpty {
-            card.show(.setup(missing), focus: false)
+            notch.show(.setup(missing), focus: false)
         } else if reportIfFine {
             flash("All set — I have the permissions I need.")
         }
@@ -129,8 +144,13 @@ final class CompanionController: ObservableObject {
 
     /// Speaks a short sample so the user can hear a voice before keeping it.
     func previewVoice() {
+        say("Hi, I'm ZOOBIE. Just tell me what you need.")
+    }
+
+    /// Speaks a line with captions, outside any request.
+    func say(_ text: String) {
         beginNarration(voiced: true, snapshot: nil)
-        narrator.enqueue(NarrationStep(text: "Hi, I'm your companion. Just tell me what you need."))
+        narrator.enqueue(NarrationStep(text: text))
         narrator.finishInput()
     }
 
@@ -163,20 +183,20 @@ final class CompanionController: ObservableObject {
 
     /// ⌃⌥Space: a one-line input next to the cursor.
     func toggleInput() {
-        if card.isVisible, card.content == .input {
-            card.hide()
+        if notch.isVisible, notch.content == .input {
+            notch.hide()
             return
         }
         beginSnapshot()
-        card.show(.input, focus: true)
+        notch.show(.input, focus: true)
     }
 
     func dismissCard() {
-        card.hide()
+        notch.hide()
     }
 
     func showHistory() {
-        if card.content == .input { card.hide() }
+        if notch.content == .input { notch.hide() }
         if !historyPanel.isVisible { historyPanel.place(near: NSEvent.mouseLocation, expanded: !messages.isEmpty) }
         historyPanel.makeKeyAndOrderFront(nil)
         focusToken += 1
@@ -188,8 +208,9 @@ final class CompanionController: ObservableObject {
 
     func escape() {
         if pendingAction != nil { decide(.stop) }
+        else if notch.model.expanded { notch.collapse() }
         else if isBusy || narrator.isActive { cancelWork() }
-        else if card.isVisible { card.hide() }
+        else if notch.isVisible { notch.hide() }
         else { hidePanel() }
     }
 
@@ -204,7 +225,7 @@ final class CompanionController: ObservableObject {
     }
 
     private func showNotice(_ text: String) {
-        card.show(.notice(text), focus: false, autoHideAfter: 10)
+        notch.show(.notice(text), focus: false, autoHideAfter: 10)
     }
 
     /// A short status caption on the buddy that clears itself.
@@ -262,7 +283,7 @@ final class CompanionController: ObservableObject {
         guard pendingAction == nil else { return } // don't clobber an action waiting for approval
         voiceRequested = true
         cancelWork() // talking interrupts whatever it was saying
-        if card.isVisible { card.hide() }
+        if notch.isVisible { notch.hide() }
         beginSnapshot()
         buddy.setMode(.listening)
         Task {
@@ -312,16 +333,16 @@ final class CompanionController: ObservableObject {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, pendingAction == nil else { return }
         input = ""
-        if card.content == .input { card.hide() }
+        if notch.content == .input { notch.hide() }
         submit(text, spoken: false)
     }
 
     private func submit(_ raw: String, spoken: Bool) {
         let text = Prompts.parseMode(raw).text // "agent:" is optional now
         guard !text.isEmpty else { return }
-        log.info("request (\(spoken ? "voice" : "typed", privacy: .public)): \(text, privacy: .public)")
+        log.notice("request (\(spoken ? "voice" : "typed", privacy: .public)): \(text, privacy: .public)")
         cancelWork()
-        if card.isVisible { card.hide() }
+        if notch.isVisible { notch.hide() }
         append(DisplayMessage(kind: .user, text: raw))
         let snapshotTask = includeScreen ? self.snapshotTask : nil
         let speak = spoken ? config.speakReplies : config.speakTypedReplies
@@ -363,7 +384,7 @@ final class CompanionController: ObservableObject {
 
     private func runClaude(request: String, snapshot: Snapshot?, speak: Bool, apiKey: String) async {
         let executor = AgentExecutor(workingDirectory: config.agentWorkingDirectory, timeout: config.commandTimeout) { [weak self] action in
-            await self?.performUI(action) ?? "Companion is shutting down."
+            await self?.performUI(action) ?? "ZOOBIE is shutting down."
         }
         let loop = ClaudeAgentLoop(
             client: AnthropicClient(apiKey: apiKey), model: config.claudeModel, effort: config.claudeEffort,
@@ -374,7 +395,7 @@ final class CompanionController: ObservableObject {
         agentStepID = nil
         activeModel = config.claudeModel
         beginNarration(voiced: speak, snapshot: snapshot)
-        log.info("brain: \(self.config.claudeModel, privacy: .public), screenshot: \(snapshot?.jpeg != nil, privacy: .public)")
+        log.notice("brain: \(self.config.claudeModel, privacy: .public), screenshot: \(snapshot?.jpeg != nil, privacy: .public)")
         do {
             let answer = try await loop.run(
                 request: request,
@@ -397,7 +418,7 @@ final class CompanionController: ObservableObject {
             }
         }
         pendingAction = nil
-        if case .approval = card.content { card.hide() }
+        if case .approval = notch.content { notch.hide() }
     }
 
     /// A new screen reading for read_screen, including the screenshot.
@@ -415,7 +436,7 @@ final class CompanionController: ObservableObject {
         generation += 1
         isBusy = false
         stopNarration()
-        if case .approval = card.content { card.hide() }
+        if case .approval = notch.content { notch.hide() }
         buddy.setMode(.idle)
     }
 
@@ -466,10 +487,10 @@ final class CompanionController: ObservableObject {
     private func runAssistant(request: String, snapshot: Snapshot?, speak: Bool) async {
         if usesClaude && !hasAPIKey && !toldAboutMissingKey {
             toldAboutMissingKey = true
-            showNotice("Using the local model for now. Add a Claude API key from the menu bar (Claude API Key…) so I can see your screen and act much more reliably.")
+            showNotice("Using the local model for now. Add a Claude API key in the notch’s Settings tab so I can see your screen and act much more reliably.")
         }
         let executor = AgentExecutor(workingDirectory: config.agentWorkingDirectory, timeout: config.commandTimeout) { [weak self] action in
-            await self?.performUI(action) ?? "Companion is shutting down."
+            await self?.performUI(action) ?? "ZOOBIE is shutting down."
         }
         let loop = AgentLoop(client: client, model: config.chatModel, options: options(for: config.chatModel),
                              executor: executor, maxSteps: config.agentMaxSteps, policy: config.approvalPolicy)
@@ -493,10 +514,11 @@ final class CompanionController: ObservableObject {
             }
         }
         pendingAction = nil
-        if case .approval = card.content { card.hide() }
+        if case .approval = notch.content { notch.hide() }
     }
 
     private func remember(question: String, answer: String) {
+        completedRequests += 1
         history.append(ChatMessage(role: .user, content: question))
         history.append(ChatMessage(role: .assistant, content: answer))
     }
@@ -517,17 +539,17 @@ final class CompanionController: ObservableObject {
             }
             streamTurn(text)
         case .proposed(let action):
-            log.info("needs approval: \(action.title, privacy: .public) — \(action.detail, privacy: .public)")
+            log.notice("needs approval: \(action.title, privacy: .public) — \(action.detail, privacy: .public)")
             settleTurn()
             agentStepID = append(DisplayMessage(kind: .step, text: "", action: action, stepState: .awaiting))
         case .running(let action):
-            log.info("running: \(action.title, privacy: .public) — \(action.detail, privacy: .public)")
+            log.notice("running: \(action.title, privacy: .public) — \(action.detail, privacy: .public)")
             settleTurn()
             agentStepID = append(DisplayMessage(kind: .step, text: "", action: action, stepState: .running))
             buddy.setMode(.thinking)
             status("▸ \(action.title)")
         case .output(let action, let output):
-            log.info("result of \(action.title, privacy: .public): \(String(output.prefix(400)), privacy: .public)")
+            log.notice("result of \(action.title, privacy: .public): \(String(output.prefix(400)), privacy: .public)")
             if output.hasPrefix("Error: macOS blocked") || output.hasPrefix("Error: Accessibility") {
                 showNotice(output.replacingOccurrences(of: "Error: ", with: "").replacingOccurrences(of: "Tell the user to allow", with: "Allow"))
             }
@@ -539,8 +561,10 @@ final class CompanionController: ObservableObject {
             buddy.setMode(.thinking)
         case .skipped:
             status("Skipped — finding another way…")
+        case .research(let line):
+            status(line)
         case .finished(let text):
-            log.info("answer: \(text, privacy: .public)")
+            log.notice("answer: \(text, privacy: .public)")
             finishNarration(finalText: text)
         case .stopped:
             note("Stopped.")
@@ -554,10 +578,10 @@ final class CompanionController: ObservableObject {
         pendingAction = action
         buddy.setMode(.idle)
         status("Okay to \(action.title.lowercased())?")
-        card.show(.approval(action), focus: true)
+        notch.show(.approval(action), focus: true)
         let decision = await withCheckedContinuation { confirmation = $0 }
         pendingAction = nil
-        if case .approval = card.content { card.hide() }
+        if case .approval = notch.content { notch.hide() }
         if let id = agentStepID {
             updateMessage(id) {
                 switch decision {
@@ -590,6 +614,10 @@ final class CompanionController: ObservableObject {
                 return "Error: Accessibility permission is off for Companion, so macOS ignores its clicks and key presses. Tell the user to enable Companion in System Settings > Privacy & Security > Accessibility."
             }
             return await performInput(action)
+        case .startAgent(let title, let task):
+            if let problem = agents.start(title: title, task: task, config: config) { return "Error: \(problem)" }
+            notch.toast("Started agent: \(title)", seconds: 4)
+            return "Started the background agent \"\(title)\". It works on its own and the user is notified when it's done — don't wait for it."
         case .readScreen:
             try? await Task.sleep(for: .milliseconds(300)) // let the UI settle after the last action
             beginSnapshot()
@@ -687,7 +715,7 @@ final class CompanionController: ObservableObject {
         turnText = finalText
         settleTurn()
         let narration = ReplyParsing.narration(from: finalText, final: true)
-        if !narration.code.isEmpty { card.show(.code(narration.code), focus: false) }
+        if !narration.code.isEmpty { notch.show(.code(narration.code), focus: false) }
         if !narrator.isPlaying { buddy.setMode(.idle) }
         narrator.finishInput()
     }

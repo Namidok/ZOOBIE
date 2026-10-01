@@ -10,6 +10,8 @@ final class BuddyModel: ObservableObject {
     @Published var caption: String?
     @Published var captionStyle: CaptionStyle = .spoken
     @Published var isPointing = false
+    /// Off when the notch shows captions instead of the bubble next to the pointer.
+    @Published var showsCaptions = true
     @Published var levels: [CGFloat] = Array(repeating: 0, count: 7)
     /// Captions flip left/up near the right/bottom screen edges so they stay visible.
     @Published var flipX = false
@@ -149,11 +151,8 @@ final class BuddyOverlay {
 // MARK: - Views
 
 enum BuddyStyle {
-    static let gradient = LinearGradient(
-        colors: [Color(red: 0.38, green: 0.62, blue: 1.0), Color(red: 0.55, green: 0.36, blue: 1.0)],
-        startPoint: .topLeading, endPoint: .bottomTrailing
-    )
-    static let glow = Color(red: 0.45, green: 0.5, blue: 1)
+    static let gradient = DS.accentGradient
+    static let glow = DS.glow
 }
 
 private struct BuddyView: View {
@@ -174,7 +173,7 @@ private struct BuddyView: View {
                     .offset(x: model.flipX ? anchor.x - 62 : anchor.x + 22, y: anchor.y + 2)
                     .transition(.opacity)
             }
-            if let caption = model.caption, !caption.isEmpty {
+            if model.showsCaptions, let caption = model.caption, !caption.isEmpty {
                 CaptionBubble(text: caption, style: model.captionStyle)
                     .frame(width: captionWidth, height: captionHeight,
                            alignment: Alignment(horizontal: model.flipX ? .trailing : .leading, vertical: model.flipY ? .bottom : .top))
@@ -198,17 +197,17 @@ private struct CaptionBubble: View {
         Text(style == .user ? "“\(text)”" : text)
             .font(.system(size: style == .status ? 12 : 13, weight: style == .spoken ? .medium : .regular))
             .italic(style == .user)
-            .foregroundStyle(Color.white.opacity(style == .spoken ? 0.95 : 0.7))
+            .foregroundStyle(style == .spoken ? DS.Colors.textPrimary : DS.Colors.textSecondary)
             .lineLimit(4)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 11)
             .padding(.vertical, 7)
             .background(
                 RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(Color(white: 0.08).opacity(0.86))
+                    .fill(DS.Colors.surface1.opacity(0.92))
                     .shadow(color: .black.opacity(0.35), radius: 8, y: 3)
             )
-            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.white.opacity(0.12)))
+            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(DS.Colors.borderSubtle))
     }
 }
 
@@ -226,7 +225,7 @@ private struct Waveform: View {
         .frame(height: 20)
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
-        .background(Capsule().fill(Color(white: 0.08).opacity(0.8)))
+        .background(Capsule().fill(DS.Colors.surface1.opacity(0.9)))
         .animation(.easeOut(duration: 0.08), value: levels)
     }
 }
@@ -264,18 +263,5 @@ private struct BuddyGlyph: View {
                 withAnimation(.easeOut(duration: 0.15)) { breathe = false }
             }
         }
-    }
-}
-
-/// A rounded cursor-like triangle whose tip is the view's top-left corner.
-private struct PointerShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.34, y: rect.maxY * 0.74))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY * 0.7))
-        path.closeSubpath()
-        return path
     }
 }

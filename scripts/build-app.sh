@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Builds build/Companion.app from the SwiftPM package (no Xcode needed).
+# Builds build/ZOOBIE.app from the SwiftPM package (no Xcode needed).
 #   scripts/build-app.sh            build only
 #   scripts/build-app.sh --install  also copy to /Applications (keeps a stable path for permissions)
 #   scripts/build-app.sh --open     also (re)launch it
@@ -21,10 +21,11 @@ done
 swift build -c release --arch arm64
 bin="$(swift build -c release --arch arm64 --show-bin-path)/Companion"
 
-app=build/Companion.app
-rm -rf "$app"
+app=build/ZOOBIE.app
+rm -rf "$app" build/Companion.app
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$bin" "$app/Contents/MacOS/Companion"
+cp "$bin" "$app/Contents/MacOS/ZOOBIE"
+[[ -f Resources/AppIcon.icns ]] && cp Resources/AppIcon.icns "$app/Contents/Resources/"
 cp Resources/Info.plist "$app/Contents/Info.plist"
 cp Resources/kokoro_server.py "$app/Contents/Resources/"
 # A stable identity keeps macOS permissions across rebuilds (see scripts/make-signing-identity.sh);
@@ -38,15 +39,16 @@ codesign --force --sign "${identity:--}" --identifier local.companion.agent "$ap
 echo "Built $app"
 
 if $install; then
+  pkill -x ZOOBIE 2>/dev/null || true
   pkill -x Companion 2>/dev/null || true
-  rm -rf /Applications/Companion.app
+  rm -rf /Applications/Companion.app /Applications/ZOOBIE.app  # the app was called Companion before
   cp -R "$app" /Applications/
-  app=/Applications/Companion.app
+  app=/Applications/ZOOBIE.app
   echo "Installed $app"
 fi
 
 if $launch; then
-  pkill -x Companion 2>/dev/null || true
+  pkill -x ZOOBIE 2>/dev/null || true
   sleep 0.3
   open "$app"
 fi

@@ -110,95 +110,25 @@ final class CardModel: ObservableObject {
     @Published var focusToken = 0
 }
 
-final class CardPanel: NSPanel {
-    var onEscape: () -> Void = {}
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { false }
-    override func cancelOperation(_ sender: Any?) { onEscape() }
-}
-
-/// The one interactive surface near the cursor: typed input, code to copy, agent approvals, notices.
-/// It sits above-right of the cursor because the buddy's captions use the space below it.
-@MainActor
-final class CursorCard {
-    let model = CardModel()
-    private let panel: CardPanel
-    private let hosting: NSHostingView<CardView>
-    private var cursor = CGPoint.zero
-    private var autoHide: DispatchWorkItem?
-    private var observer: AnyCancellable?
-
-    var content: CardModel.Content? { model.content }
-    var isVisible: Bool { panel.isVisible }
-    var isKey: Bool { panel.isKeyWindow }
-
-    init(controller: CompanionController) {
-        panel = CardPanel(contentRect: CGRect(x: 0, y: 0, width: 10, height: 10),
-                          styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.isFloatingPanel = true
-        panel.level = .statusBar
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
-        panel.hidesOnDeactivate = false
-        panel.isReleasedWhenClosed = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.appearance = NSAppearance(named: .darkAqua)
-        hosting = NSHostingView(rootView: CardView(model: model, controller: controller))
-        hosting.sizingOptions = []
-        panel.contentView = hosting
-        panel.onEscape = { [weak controller] in controller?.escape() }
-        // Re-fit after any content change (e.g. the input growing a line).
-        observer = model.objectWillChange.sink { [weak self] _ in
-            DispatchQueue.main.async { self?.fit() }
-        }
-    }
-
-    func show(_ content: CardModel.Content, focus: Bool, autoHideAfter delay: TimeInterval? = nil) {
-        autoHide?.cancel()
-        cursor = NSEvent.mouseLocation
-        model.content = content
-        fit()
-        if focus {
-            panel.makeKeyAndOrderFront(nil)
-            model.focusToken += 1
-        } else {
-            panel.orderFrontRegardless()
-        }
-        if let delay {
-            let work = DispatchWorkItem { [weak self] in
-                if self?.model.content == content { self?.hide() }
-            }
-            autoHide = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-        }
-    }
-
-    func hide() {
-        autoHide?.cancel()
-        model.content = nil
-        panel.orderOut(nil)
-    }
-
-    private func fit() {
-        guard model.content != nil else { return }
-        hosting.layoutSubtreeIfNeeded()
-        let size = hosting.fittingSize
-        guard size.width > 1, size.height > 1 else { return }
-        let visible = (NSScreen.screens.first { NSMouseInRect(cursor, $0.frame, false) } ?? NSScreen.main)?.visibleFrame ?? .zero
-        var origin = CGPoint(x: cursor.x + 18, y: cursor.y + 18)
-        if origin.y + size.height > visible.maxY { origin.y = cursor.y - 120 - size.height }
-        if origin.x + size.width > visible.maxX { origin.x = cursor.x - 18 - size.width }
-        origin.x = min(max(origin.x, visible.minX + 8), visible.maxX - size.width - 8)
-        origin.y = min(max(origin.y, visible.minY + 8), visible.maxY - size.height - 8)
-        panel.setFrame(CGRect(origin: origin, size: size), display: true)
+private struct OptionalSurface: ViewModifier {
+    let enabled: Bool
+    func body(content: Content) -> some View {
+        if enabled { content.dsSurface() } else { content }
     }
 }
 
 struct CardView: View {
     @ObservedObject var model: CardModel
     @ObservedObject var controller: CompanionController
+    /// Inside the notch: no surface of its own.
+    var embedded = false
     @FocusState private var inputFocused: Bool
+
+    init(model: CardModel, controller: CompanionController, embedded: Bool = false) {
+        self.model = model
+        self.controller = controller
+        self.embedded = embedded
+    }
 
     var body: some View {
         Group {
@@ -211,9 +141,7 @@ struct CardView: View {
             case nil: EmptyView()
             }
         }
-        .background(VisualEffectBackground())
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.white.opacity(0.12)))
+        .modifier(OptionalSurface(enabled: !embedded))
         .onExitCommand { controller.escape() }
         .onChange(of: model.focusToken) { inputFocused = true }
     }
@@ -277,14 +205,14 @@ struct CardView: View {
     private func approvalView(_ action: AgentAction) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 6) {
-                Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
+                Image(systemName: "hand.raised.fill").foregroundStyle(DS.Colors.warning)
                 Text("\(action.title)?").font(.system(size: 13, weight: .semibold))
                 if action.isDestructive {
                     Text("CAUTION")
                         .font(.system(size: 9, weight: .bold))
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.red.opacity(0.85)))
+                        .background(Capsule().fill(DS.Colors.danger))
                 }
                 Spacer()
             }
@@ -298,13 +226,14 @@ struct CardView: View {
             HStack(spacing: 8) {
                 Text("↩ run · ⌘S skip · esc stop").font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()
-                Button("Stop") { controller.decide(.stop) }
-                Button("Skip") { controller.decide(.skip) }.keyboardShortcut("s", modifiers: .command)
+                Button("Stop") { controller.decide(.stop) }.buttonStyle(DSButtonStyle(kind: .ghost, compact: true))
+                Button("Skip") { controller.decide(.skip) }
+                    .keyboardShortcut("s", modifiers: .command)
+                    .buttonStyle(DSButtonStyle(kind: .secondary, compact: true))
                 Button("Run") { controller.decide(.run) }
                     .keyboardShortcut(.defaultAction)
-                    .tint(action.isDestructive ? .red : .accentColor)
+                    .buttonStyle(DSButtonStyle(kind: action.isDestructive ? .destructive : .primary, compact: true))
             }
-            .controlSize(.small)
         }
         .padding(12)
         .frame(width: 420)
@@ -315,8 +244,8 @@ struct CardView: View {
     private func setupView(_ missing: [Permissions.Kind]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Image(systemName: "lock.shield.fill").foregroundStyle(.orange)
-                Text("Companion needs permission to act").font(.system(size: 13, weight: .semibold))
+                Image(systemName: "lock.shield.fill").foregroundStyle(DS.Colors.accent)
+                Text("ZOOBIE needs permission to act").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Button(action: controller.dismissCard) { Image(systemName: "xmark").font(.system(size: 10, weight: .bold)) }
                     .buttonStyle(.plain)
@@ -324,17 +253,17 @@ struct CardView: View {
             }
             ForEach(missing, id: \.self) { kind in
                 HStack(spacing: 8) {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+                    Image(systemName: "circle.dashed").foregroundStyle(DS.Colors.warning)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(kind.rawValue).font(.system(size: 12, weight: .semibold))
                         Text(kind.purpose).font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("Open Settings") { NSWorkspace.shared.open(kind.settingsURL) }
-                        .controlSize(.small)
+                        .buttonStyle(DSButtonStyle(kind: .primary, compact: true))
                 }
             }
-            Text("Turn Companion on in each list (remove any old “Companion” entry first), then choose Check Setup in the menu. Screen Recording needs a relaunch.")
+            Text("Turn ZOOBIE on in each list (remove any old “Companion” entry first), then reopen Settings from the notch. Screen Recording needs a relaunch.")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -347,7 +276,7 @@ struct CardView: View {
 
     private func noticeView(_ text: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
+            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(DS.Colors.warning)
             Text(text)
                 .font(.system(size: 12))
                 .lineLimit(5)

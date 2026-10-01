@@ -256,7 +256,7 @@ public enum ReplyParsing {
                 String(piece[tagRange.upperBound...]).trimmingCharacters(in: .whitespaces))
     }
 
-    static func stripMarkdown(_ line: String) -> String {
+    public static func stripMarkdown(_ line: String) -> String {
         var s = line.trimmingCharacters(in: .whitespaces)
         s = s.replacingOccurrences(of: #"^(#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+)"#, with: "", options: .regularExpression)
         s = s.replacingOccurrences(of: #"\[([^\]]+)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
