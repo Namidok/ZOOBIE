@@ -43,6 +43,9 @@ final class CompanionController: ObservableObject {
     private let narrator = Narrator()
     private let speechIn = SpeechInput()
     let agents = AgentManager()
+    let timers = TimerManager()
+    /// The specialist the user is talking to directly (e.g. German practice); nil means ZOOBIE.
+    @Published private(set) var focused: Specialist.ID?
     private(set) lazy var notch = NotchController(controller: self, agents: agents)
     /// Opens the first-run setup window (set by the app delegate).
     var openOnboarding: () -> Void = {}
@@ -76,13 +79,47 @@ final class CompanionController: ObservableObject {
         narrator.onFinish = { [weak self] in self?.narrationFinished() }
         buddy.model.showsCaptions = false // captions live in the notch
         agents.onFinished = { [weak self] run in self?.announce(run) }
+        agents.config = { [weak self] in self?.config ?? CompanionConfig() }
+        agents.timerHandler = { [weak self] action in self?.handleTimer(action) ?? "Timers are unavailable." }
+        timers.onFire = { [weak self] timer in self?.timerFired(timer) }
     }
+
+    // MARK: Timers
+
+    private func handleTimer(_ action: AgentAction) -> String {
+        switch action {
+        case .setTimer(let seconds, let label): return timers.start(seconds: seconds, label: label)
+        case .listTimers: return timers.list()
+        case .cancelTimer(let label): return timers.cancel(label)
+        default: return "Not a timer action."
+        }
+    }
+
+    private func timerFired(_ timer: TimerManager.Item) {
+        NSSound(named: "Glass")?.play()
+        notch.toast("⏰ \(timer.label) — time's up", seconds: 12)
+        if !isBusy && !narrator.isActive { say("Your \(timer.label) timer is done.") }
+    }
+
+    // MARK: Talking to a specialist
+
+    func talk(to id: Specialist.ID?) {
+        focused = id
+        if let id {
+            say("You're with \(agents.name(id)) now. Say back to ZOOBIE when you're done.")
+        }
+    }
+
+    private static let leaveFocusPattern = try! NSRegularExpression(
+        pattern: #"^\s*(back to zoobie|zoobie,? come back|stop practi[cs]e|end (the )?(practice|session)|i'?m done|that'?s all|exit)\b"#,
+        options: [.caseInsensitive])
 
     /// A background agent finished: show it in the notch and say so if nothing else is talking.
     private func announce(_ run: AgentRun) {
-        notch.toast("\(run.title) — done. Open Agents to read it.")
+        let who = run.agent.map(agents.name) ?? "Your agent"
+        notch.toast("\(who) finished \(run.title). Open Agents to read it.")
         if !isBusy && !narrator.isActive {
-            say("Your agent finished \(run.title). \(run.summary ?? "")")
+            say("\(who) finished \(run.title). \(run.summary ?? "")")
         }
     }
 
@@ -286,6 +323,7 @@ final class CompanionController: ObservableObject {
         if notch.isVisible { notch.hide() }
         beginSnapshot()
         buddy.setMode(.listening)
+        speechIn.localeIdentifier = focused == .german && agents.germanSpeechInput ? "de-DE" : "en-US"
         Task {
             do {
                 try await SpeechInput.requestPermissions()
@@ -338,8 +376,15 @@ final class CompanionController: ObservableObject {
     }
 
     private func submit(_ raw: String, spoken: Bool) {
-        let text = Prompts.parseMode(raw).text // "agent:" is optional now
-        guard !text.isEmpty else { return }
+        let (isAgentRequest, stripped) = Prompts.parseMode(raw)
+        guard !stripped.isEmpty else { return }
+        // "agent: …" always goes to the right specialist.
+        let text = isAgentRequest ? "Delegate this to the right specialist with the delegate tool: \(stripped)" : stripped
+        if let focused, Self.leaveFocusPattern.firstMatch(in: stripped, range: NSRange(stripped.startIndex..., in: stripped)) != nil {
+            self.focused = nil
+            say("Back with ZOOBIE. \(agents.name(focused)) will remember where you left off.")
+            return
+        }
         log.notice("request (\(spoken ? "voice" : "typed", privacy: .public)): \(text, privacy: .public)")
         cancelWork()
         if notch.isVisible { notch.hide() }
@@ -352,7 +397,9 @@ final class CompanionController: ObservableObject {
         workTask = Task { [weak self] in
             let snapshot = await snapshotTask?.value
             guard let self, !Task.isCancelled else { return }
-            if usesClaude, let apiKey = APIKeyStore.read() {
+            if let focused, let apiKey = APIKeyStore.read() {
+                await runSpecialist(focused, request: stripped, snapshot: snapshot, speak: speak, apiKey: apiKey)
+            } else if usesClaude, let apiKey = APIKeyStore.read() {
                 await runClaude(request: text, snapshot: snapshot, speak: speak, apiKey: apiKey)
             } else if let vision = visionModel, let snapshot, VisionRouting.shouldUseVision(
                 mode: config.visionMode, hasVisionModel: true, ocrCharacters: snapshot.context.characterCount, question: text
@@ -391,13 +438,15 @@ final class CompanionController: ObservableObject {
             executor: executor, maxSteps: config.agentMaxSteps, policy: config.approvalPolicy,
             captureScreen: { [weak self] in await self?.freshCapture() }
         )
+        var loopWithNames = loop
+        loopWithNames.specialistNames = Dictionary(uniqueKeysWithValues: Specialist.ID.allCases.map { ($0, agents.name($0)) })
         agentTurnID = nil
         agentStepID = nil
         activeModel = config.claudeModel
         beginNarration(voiced: speak, snapshot: snapshot)
         log.notice("brain: \(self.config.claudeModel, privacy: .public), screenshot: \(snapshot?.jpeg != nil, privacy: .public)")
         do {
-            let answer = try await loop.run(
+            let answer = try await loopWithNames.run(
                 request: request,
                 screen: snapshot?.capture,
                 history: Array(history.suffix(8)),
@@ -408,9 +457,47 @@ final class CompanionController: ObservableObject {
         } catch let error as ClaudeError where error.suggestsLocalFallback && !Task.isCancelled {
             log.error("claude unavailable, falling back to local: \(error.localizedDescription, privacy: .public)")
             stopNarration()
-            flash("Claude isn't reachable — using the local model.")
+            if case .noCredits = error {
+                showNotice(error.localizedDescription) // stays up long enough to read, unlike a flash
+            } else {
+                flash("Claude isn't reachable — using the local model.")
+            }
             await runAssistant(request: request, snapshot: snapshot, speak: speak)
             return
+        } catch {
+            if !Task.isCancelled && !(error is CancellationError) {
+                stopNarration()
+                fail(error)
+            }
+        }
+        pendingAction = nil
+        if case .approval = notch.content { notch.hide() }
+    }
+
+    /// A live conversation with one specialist: its persona, tools, notebook and thread.
+    private func runSpecialist(_ id: Specialist.ID, request: String, snapshot: Snapshot?, speak: Bool, apiKey: String) async {
+        let specialist = Specialist.get(id)
+        let executor = AgentExecutor(workingDirectory: config.agentWorkingDirectory, timeout: config.commandTimeout,
+                                     ui: { [weak self] action in await self?.performUI(action) ?? "ZOOBIE is shutting down." },
+                                     notebookURL: agents.memory.notebookURL(id))
+        let loop = ClaudeAgentLoop(
+            client: AnthropicClient(apiKey: apiKey), model: config.claudeModel, effort: "low",
+            executor: executor, maxSteps: 8, policy: config.approvalPolicy,
+            role: .specialist(specialist, name: agents.name(id), notebook: agents.memory.notebook(id), conversation: true),
+            captureScreen: { [weak self] in await self?.freshCapture() }
+        )
+        activeModel = agents.name(id)
+        beginNarration(voiced: speak, snapshot: snapshot)
+        do {
+            let answer = try await loop.run(
+                request: request, screen: snapshot?.capture, history: agents.conversationHistory(id),
+                confirm: { [weak self] action in await self?.confirm(action) ?? .stop },
+                emit: { [weak self] event in await self?.handle(event) }
+            )
+            if !answer.isEmpty {
+                agents.recordConversation(id, question: request, answer: ReplyParsing.extractPoints(from: answer).clean)
+                completedRequests += 1
+            }
         } catch {
             if !Task.isCancelled && !(error is CancellationError) {
                 stopNarration()
@@ -614,10 +701,15 @@ final class CompanionController: ObservableObject {
                 return "Error: Accessibility permission is off for Companion, so macOS ignores its clicks and key presses. Tell the user to enable Companion in System Settings > Privacy & Security > Accessibility."
             }
             return await performInput(action)
-        case .startAgent(let title, let task):
-            if let problem = agents.start(title: title, task: task, config: config) { return "Error: \(problem)" }
-            notch.toast("Started agent: \(title)", seconds: 4)
-            return "Started the background agent \"\(title)\". It works on its own and the user is notified when it's done — don't wait for it."
+        case .delegate(let agent, let title, let task):
+            if let problem = agents.delegate(to: agent, title: title, task: task) { return "Error: \(problem)" }
+            notch.toast("\(agents.name(agent)) is on it: \(title)", seconds: 4)
+            return "Delegated to \(agents.name(agent)). It works on its own and the user is told when it's done — don't wait for it."
+        case .talkTo(let agent):
+            focused = agent
+            return "The user is now talking with \(agents.name(agent)) directly. Tell them in one short sentence."
+        case .setTimer, .listTimers, .cancelTimer:
+            return handleTimer(action)
         case .readScreen:
             try? await Task.sleep(for: .milliseconds(300)) // let the UI settle after the last action
             beginSnapshot()

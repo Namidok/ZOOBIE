@@ -79,7 +79,7 @@ final class NotchController {
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
         panel.appearance = NSAppearance(named: .darkAqua)
         panel.contentView = NSHostingView(rootView: NotchView(
-            model: model, card: cardModel, controller: controller, buddy: controller.buddy.model, agents: agents
+            model: model, card: cardModel, controller: controller, buddy: controller.buddy.model, agents: agents, timers: controller.timers
         ))
         panel.onEscape = { [weak controller] in controller?.escape() }
         screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
@@ -266,6 +266,7 @@ private struct NotchView: View {
     @ObservedObject var controller: CompanionController
     @ObservedObject var buddy: BuddyModel
     @ObservedObject var agents: AgentManager
+    @ObservedObject var timers: TimerManager
 
     private enum Compact: Equatable {
         case card(CardModel.Content)
@@ -285,7 +286,9 @@ private struct NotchView: View {
         return nil
     }
 
-    private var isActive: Bool { buddy.mode != .idle || agents.activeCount > 0 || compact != nil }
+    private var isActive: Bool {
+        buddy.mode != .idle || agents.activeCount > 0 || compact != nil || !timers.timers.isEmpty || controller.focused != nil
+    }
 
     private var shapeSize: CGSize {
         let notch = model.notchSize
@@ -344,19 +347,29 @@ private struct NotchView: View {
         case .listening: NotchWaveform(levels: buddy.levels)
         case .thinking: NotchSpinner()
         case .speaking: NotchSpeakingBars()
-        case .idle: ZoobieMark(size: 13)
+        case .idle:
+            if let focused = controller.focused {
+                SpecialistAvatar(id: focused, agents: agents, size: 18).help("Talking with \(agents.name(focused))")
+            } else {
+                ZoobieMark(size: 13)
+            }
         }
     }
 
     @ViewBuilder private var rightWing: some View {
-        if agents.activeCount > 0 {
+        if !agents.approvals.isEmpty {
+            Image(systemName: "hand.raised.fill").font(.system(size: 11)).foregroundStyle(DS.Colors.warning)
+        } else if agents.activeCount > 0 {
             HStack(spacing: 4) {
                 NotchSpinner(size: 10)
                 Text("\(agents.activeCount)").font(.system(size: 11, weight: .bold, design: .rounded)).foregroundStyle(DS.Colors.textPrimary)
             }
             .help("\(agents.activeCount) agent(s) working")
-        } else if !agents.approvals.isEmpty {
-            Image(systemName: "hand.raised.fill").font(.system(size: 11)).foregroundStyle(DS.Colors.warning)
+        } else if let timer = timers.next {
+            Text(TimerManager.format(timer.remaining))
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(DS.Colors.accent)
+                .help(timer.label)
         } else if buddy.mode == .listening {
             Circle().fill(DS.Colors.danger).frame(width: 7, height: 7)
         }
@@ -423,9 +436,19 @@ private struct AssistantTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if let focused = controller.focused {
+                HStack(spacing: 8) {
+                    SpecialistAvatar(id: focused, agents: controller.agents, size: 22, busy: true)
+                    Text("Talking with \(controller.agents.name(focused))").font(.system(size: 12, weight: .semibold)).foregroundStyle(DS.Colors.textPrimary)
+                    Spacer()
+                    Button("Back to ZOOBIE") { controller.talk(to: nil) }.buttonStyle(DSButtonStyle(kind: .secondary, compact: true))
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: DS.Radius.medium).fill(DS.Colors.accent.opacity(0.1)))
+            }
             HStack(spacing: 10) {
                 Image(systemName: "sparkle").foregroundStyle(DS.accentGradient)
-                TextField("Ask ZOOBIE, or tell it to do something…", text: $controller.input)
+                TextField(controller.focused.map { "Message \(controller.agents.name($0))…" } ?? "Ask ZOOBIE, or tell it to do something…", text: $controller.input)
                     .textFieldStyle(.plain)
                     .font(.system(size: 14))
                     .focused($focused)
@@ -449,7 +472,7 @@ private struct AssistantTab: View {
                             Text(exchange.question).font(.system(size: 12)).foregroundStyle(DS.Colors.textTertiary)
                             MarkdownView(text: exchange.answer)
                         } else {
-                            Text("Hold ⌃⌥ and talk, or type here. Ask a question, give it something to do, or say “start an agent to…”.")
+                            Text("Hold ⌃⌥ and talk, or type here. Ask a question, tell ZOOBIE to do something, or say “agent: …” to hand a job to a specialist.")
                                 .font(.system(size: 12)).foregroundStyle(DS.Colors.textTertiary)
                         }
                     }
@@ -477,30 +500,146 @@ private struct AssistantTab: View {
 
 // MARK: - Agents tab
 
+/// A specialist's face: the user's avatar image if provided, otherwise its symbol on an amber disc.
+struct SpecialistAvatar: View {
+    let id: Specialist.ID
+    @ObservedObject var agents: AgentManager
+    var size: CGFloat = 34
+    var busy = false
+
+    var body: some View {
+        ZStack {
+            if let image = agents.avatar(id) {
+                Image(nsImage: image).resizable().scaledToFill()
+            } else {
+                Circle().fill(DS.Colors.accent.opacity(0.14))
+                Image(systemName: Specialist.get(id).symbol)
+                    .font(.system(size: size * 0.42, weight: .semibold))
+                    .foregroundStyle(DS.accentGradient)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay(Circle().strokeBorder(busy ? DS.Colors.accent : DS.Colors.borderStrong, lineWidth: busy ? 2 : 1))
+        .shadow(color: busy ? DS.glow.opacity(0.55) : .clear, radius: busy ? 6 : 0)
+    }
+}
+
+private enum SpecialistTagline {
+    static func of(_ id: Specialist.ID) -> String {
+        switch id {
+        case .jobs: return "Jobs · CVs · applications"
+        case .mentor: return "Dev · Python · AI/ML"
+        case .schedule: return "Calendar · reminders · timers"
+        case .german: return "Deutsch practice"
+        }
+    }
+}
+
 private struct AgentsTab: View {
     @ObservedObject var agents: AgentManager
     @ObservedObject var controller: CompanionController
-    @State private var draft = ""
-    @State private var error: String?
-    @State private var selected: UUID?
+    @State private var selected: Specialist.ID?
 
     var body: some View {
-        if let id = selected, let run = agents.runs.first(where: { $0.id == id }) {
-            AgentDetail(run: run, agents: agents) { selected = nil }
+        if let selected {
+            SpecialistDetail(id: selected, agents: agents, controller: controller) { self.selected = nil }
         } else {
-            list
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(agents.approvals) { approval in AgentApprovalView(approval: approval, agents: agents) }
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                    ForEach(Specialist.all) { specialist in
+                        SpecialistCard(id: specialist.id, agents: agents, controller: controller)
+                            .onTapGesture { selected = specialist.id }
+                    }
+                }
+                Text("Say “agent: …” to hand any job to the right specialist, or open one to give it a task or talk to it.")
+                    .font(.system(size: 11)).foregroundStyle(DS.Colors.textTertiary)
+                Spacer(minLength: 0)
+            }
         }
     }
+}
 
-    private var list: some View {
+private struct SpecialistCard: View {
+    let id: Specialist.ID
+    @ObservedObject var agents: AgentManager
+    @ObservedObject var controller: CompanionController
+
+    var body: some View {
+        let busy = agents.current(id) != nil
+        let talking = controller.focused == id
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                SpecialistAvatar(id: id, agents: agents, size: 36, busy: busy)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(agents.name(id)).font(.system(size: 13, weight: .semibold)).foregroundStyle(DS.Colors.textPrimary)
+                    Text(SpecialistTagline.of(id)).font(.system(size: 10)).foregroundStyle(DS.Colors.textTertiary)
+                }
+                Spacer(minLength: 0)
+                if busy {
+                    NotchSpinner(size: 11)
+                } else if agents.queued(id) > 0 {
+                    Text("\(agents.queued(id))").font(.system(size: 10, weight: .bold)).padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(DS.Colors.accent)).foregroundStyle(Color(hex: 0x1A1205))
+                }
+            }
+            Text(agents.statusLine(id))
+                .font(.system(size: 11)).foregroundStyle(DS.Colors.textSecondary)
+                .lineLimit(2).frame(maxWidth: .infinity, minHeight: 28, alignment: .topLeading)
+            HStack {
+                Button(talking ? "Talking" : "Talk") { controller.talk(to: talking ? nil : id) }
+                    .buttonStyle(DSButtonStyle(kind: talking ? .primary : .secondary, compact: true))
+                Spacer()
+                Text("Open ›").font(.system(size: 10, weight: .medium)).foregroundStyle(DS.Colors.textTertiary)
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: DS.Radius.medium).fill(DS.Colors.surface1))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.medium).strokeBorder(talking || busy ? DS.Colors.accent.opacity(0.6) : DS.Colors.borderSubtle))
+        .contentShape(Rectangle())
+        .dsPointerOnHover()
+    }
+}
+
+private struct SpecialistDetail: View {
+    let id: Specialist.ID
+    @ObservedObject var agents: AgentManager
+    @ObservedObject var controller: CompanionController
+    let back: () -> Void
+    @State private var draft = ""
+    @State private var error: String?
+    @State private var showNotebook = false
+
+    var body: some View {
+        let talking = controller.focused == id
         VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Button(action: back) { Label("Agents", systemImage: "chevron.left") }.buttonStyle(DSButtonStyle(kind: .ghost, compact: true))
+                Spacer()
+                if id == .german {
+                    Toggle(isOn: $agents.germanSpeechInput) {
+                        Text("I'll speak German").font(.system(size: 11)).foregroundStyle(DS.Colors.textSecondary)
+                    }
+                    .toggleStyle(.switch).controlSize(.mini).tint(DS.Colors.accent)
+                    .help("Transcribe your voice in German while practicing (needs German dictation installed)")
+                }
+                Button(talking ? "Back to ZOOBIE" : "Talk") { controller.talk(to: talking ? nil : id) }
+                    .buttonStyle(DSButtonStyle(kind: talking ? .secondary : .primary, compact: true))
+            }
+            HStack(spacing: 12) {
+                SpecialistAvatar(id: id, agents: agents, size: 44, busy: agents.current(id) != nil)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(agents.name(id)).font(.system(size: 15, weight: .bold)).foregroundStyle(DS.Colors.textPrimary)
+                    Text(Specialist.get(id).role).font(.system(size: 11)).foregroundStyle(DS.Colors.textSecondary).lineLimit(2)
+                }
+            }
             HStack(spacing: 8) {
                 Image(systemName: "plus.circle.fill").foregroundStyle(DS.Colors.accent)
-                TextField("Give an agent a job — e.g. research the best 4K monitors under $500", text: $draft)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .onSubmit(start)
-                Button("Start", action: start)
+                TextField("Give \(agents.name(id)) a task…", text: $draft)
+                    .textFieldStyle(.plain).font(.system(size: 13))
+                    .onSubmit(assign)
+                Button("Assign", action: assign)
                     .buttonStyle(DSButtonStyle(kind: .primary, compact: true))
                     .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
             }
@@ -508,66 +647,102 @@ private struct AgentsTab: View {
             .background(RoundedRectangle(cornerRadius: DS.Radius.medium).fill(DS.Colors.surface1))
             if let error { Text(error).font(.system(size: 11)).foregroundStyle(DS.Colors.warning) }
 
-            ForEach(agents.approvals) { approval in AgentApprovalView(approval: approval, agents: agents) }
-
-            if agents.runs.isEmpty {
-                Text("Agents work in the background while you keep going — research, comparisons, reports, file chores. Results land here and in ~/Documents/ZOOBIE.")
-                    .font(.system(size: 12)).foregroundStyle(DS.Colors.textTertiary)
-                Spacer()
-            } else {
-                ScrollView {
-                    VStack(spacing: 6) {
-                        ForEach(agents.runs) { run in
-                            AgentRow(run: run, agents: agents).onTapGesture { selected = run.id }
-                        }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    let runs = agents.runs(for: id)
+                    if runs.isEmpty {
+                        Text("No tasks yet.").font(.system(size: 12)).foregroundStyle(DS.Colors.textTertiary)
                     }
+                    ForEach(runs) { run in RunRow(run: run, agents: agents) }
+                    DisclosureGroup(isExpanded: $showNotebook) {
+                        let notebook = agents.memoryVersion >= 0 ? agents.memory.notebook(id) : ""
+                        Text(notebook.isEmpty ? "Empty — it fills up as \(agents.name(id)) learns about you." : notebook)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(DS.Colors.textSecondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                            .background(RoundedRectangle(cornerRadius: DS.Radius.small).fill(DS.Colors.surface1))
+                    } label: {
+                        Text("Notebook (long-term memory)").font(.system(size: 12, weight: .semibold)).foregroundStyle(DS.Colors.textPrimary)
+                    }
+                    .padding(.top, 4)
                 }
-                HStack {
-                    Spacer()
-                    Button("Clear finished", action: agents.clearFinished).buttonStyle(DSButtonStyle(kind: .ghost, compact: true))
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack {
+                Button("Clear finished") { agents.clearFinished(id) }.buttonStyle(DSButtonStyle(kind: .ghost, compact: true))
+                Spacer()
+                Button("Forget memory") { agents.clearMemory(id) }
+                    .buttonStyle(DSButtonStyle(kind: .ghost, compact: true))
+                    .help("Erase this specialist's notebook and conversation")
             }
         }
     }
 
-    private func start() {
+    private func assign() {
         let task = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !task.isEmpty else { return }
         let title = String(task.split(separator: " ").prefix(6).joined(separator: " "))
-        error = agents.start(title: title, task: task, config: controller.config)
+        error = agents.delegate(to: id, title: title, task: task)
         if error == nil { draft = "" }
     }
 }
 
-private struct AgentRow: View {
+private struct RunRow: View {
     let run: AgentRun
     @ObservedObject var agents: AgentManager
+    @State private var expanded = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            statusIcon.frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(run.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(DS.Colors.textPrimary).lineLimit(1)
-                Text(subtitle).font(.system(size: 11)).foregroundStyle(DS.Colors.textTertiary).lineLimit(1)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                statusIcon.frame(width: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(run.title).font(.system(size: 12, weight: .semibold)).foregroundStyle(DS.Colors.textPrimary).lineLimit(1)
+                    Text(subtitle).font(.system(size: 11)).foregroundStyle(DS.Colors.textTertiary).lineLimit(1)
+                }
+                Spacer()
+                Text(run.createdAt, style: .relative).font(.system(size: 10)).foregroundStyle(DS.Colors.textTertiary)
+                if run.status.isActive {
+                    Button { agents.cancel(run.id) } label: { Image(systemName: "stop.fill") }
+                        .buttonStyle(DSButtonStyle(kind: .ghost, compact: true)).help("Stop")
+                } else {
+                    Button { agents.remove(run.id) } label: { Image(systemName: "xmark") }
+                        .buttonStyle(DSButtonStyle(kind: .ghost, compact: true)).help("Remove")
+                }
             }
-            Spacer()
-            Text(run.createdAt, style: .relative).font(.system(size: 10)).foregroundStyle(DS.Colors.textTertiary)
-            if run.status.isActive {
-                Button { agents.cancel(run.id) } label: { Image(systemName: "stop.fill") }
-                    .buttonStyle(DSButtonStyle(kind: .ghost, compact: true)).help("Stop")
-            } else {
-                Button { agents.remove(run.id) } label: { Image(systemName: "xmark") }
-                    .buttonStyle(DSButtonStyle(kind: .ghost, compact: true)).help("Remove")
+            if expanded {
+                if let report = run.report, !report.isEmpty {
+                    HStack {
+                        if let path = run.reportPath {
+                            Button("Open report") { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }.buttonStyle(DSButtonStyle(kind: .secondary, compact: true))
+                        }
+                        Button("Copy") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(report, forType: .string)
+                        }
+                        .buttonStyle(DSButtonStyle(kind: .secondary, compact: true))
+                    }
+                    MarkdownView(text: report)
+                } else {
+                    ForEach(Array(run.steps.enumerated()), id: \.offset) { _, step in
+                        Label(step, systemImage: "arrow.turn.down.right").font(.system(size: 11)).foregroundStyle(DS.Colors.textSecondary).lineLimit(2)
+                    }
+                    if let error = run.error { Text(error).font(.system(size: 11)).foregroundStyle(DS.Colors.danger) }
+                }
             }
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: DS.Radius.medium).fill(DS.Colors.surface1))
         .contentShape(Rectangle())
+        .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } }
         .dsPointerOnHover()
     }
 
     private var subtitle: String {
         switch run.status {
+        case .queued: return "Queued"
         case .running: return run.steps.last ?? "Getting started…"
         case .waiting: return "Waiting for your OK"
         case .done: return run.summary ?? "Done"
@@ -578,55 +753,12 @@ private struct AgentRow: View {
 
     @ViewBuilder private var statusIcon: some View {
         switch run.status {
+        case .queued: Image(systemName: "clock").foregroundStyle(DS.Colors.textTertiary)
         case .running: NotchSpinner(size: 11)
         case .waiting: Image(systemName: "hand.raised.fill").foregroundStyle(DS.Colors.warning)
         case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(DS.Colors.success)
         case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(DS.Colors.danger)
         case .cancelled: Image(systemName: "stop.circle").foregroundStyle(DS.Colors.textTertiary)
-        }
-    }
-}
-
-private struct AgentDetail: View {
-    let run: AgentRun
-    @ObservedObject var agents: AgentManager
-    let back: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Button(action: back) { Label("Agents", systemImage: "chevron.left") }.buttonStyle(DSButtonStyle(kind: .ghost, compact: true))
-                Spacer()
-                if let path = run.reportPath {
-                    Button("Open report") { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }.buttonStyle(DSButtonStyle(kind: .secondary, compact: true))
-                }
-                if let report = run.report {
-                    Button("Copy") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(report, forType: .string)
-                    }
-                    .buttonStyle(DSButtonStyle(kind: .secondary, compact: true))
-                }
-                if run.status.isActive {
-                    Button("Stop") { agents.cancel(run.id) }.buttonStyle(DSButtonStyle(kind: .destructive, compact: true))
-                }
-            }
-            Text(run.title).font(.system(size: 15, weight: .bold)).foregroundStyle(DS.Colors.textPrimary)
-            Text(run.task).font(.system(size: 11)).foregroundStyle(DS.Colors.textTertiary).lineLimit(2)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
-                    if let report = run.report, !report.isEmpty {
-                        MarkdownView(text: report)
-                    } else {
-                        ForEach(Array(run.steps.enumerated()), id: \.offset) { _, step in
-                            Label(step, systemImage: "arrow.turn.down.right")
-                                .font(.system(size: 11)).foregroundStyle(DS.Colors.textSecondary).lineLimit(2)
-                        }
-                        if let error = run.error { Text(error).font(.system(size: 12)).foregroundStyle(DS.Colors.danger) }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
         }
     }
 }

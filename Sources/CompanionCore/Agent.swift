@@ -7,12 +7,19 @@ public enum AgentTools {
 
     public static let names: Set<String> = [
         "open_app", "run_applescript", "media_control", "click", "type_text", "press_keys", "read_screen",
-        "run_shell", "read_file", "write_file", "list_directory", "open_url", "start_agent",
+        "run_shell", "read_file", "write_file", "list_directory", "open_url", "delegate", "talk_to",
+        "set_timer", "list_timers", "cancel_timer", "create_reminder", "list_events", "create_event", "update_notebook",
     ]
 
     /// Tools that drive the screen, mouse or keyboard. Background agents never get these, so they
     /// can't interfere with what the user is doing.
-    public static let foregroundOnly: Set<String> = ["click", "type_text", "press_keys", "media_control", "read_screen", "start_agent"]
+    public static let foregroundOnly: Set<String> = ["click", "type_text", "press_keys", "media_control", "read_screen", "delegate", "talk_to"]
+
+    /// Only specialists keep a notebook.
+    public static let specialistOnly: Set<String> = ["update_notebook"]
+
+    /// Need the Claude brain (they hand work to Claude-powered specialists).
+    public static let claudeOnly: Set<String> = ["delegate", "talk_to"]
 
     /// The definitions minus the named tools.
     public static func definitions(excluding excluded: Set<String>) -> [JSONValue] {
@@ -43,8 +50,22 @@ public enum AgentTools {
         tool("list_directory", "List the entries of a directory.", ["path": "Absolute path of the directory."], required: ["path"]),
         tool("open_url", "Open a URL or file in its default app, e.g. a web page in the browser.",
              ["url": "The URL or absolute file path to open."], required: ["url"]),
-        tool("start_agent", "Hand a longer job to a background agent (research, comparisons, writing a report, multi-step file work) so the user can keep working. It reports back when done.",
-             ["title": "A short title, 2 to 5 words.", "task": "The full task with everything the agent needs to know."], required: ["title", "task"]),
+        tool("delegate", "Hand a longer job to one of the four background specialists so the user can keep working; it reports back when done. Specialists: jobs (job/internship search, application tracking, CVs, cover letters), mentor (software development, Python/FastAPI, AI/ML, academic assignments), schedule (calendar, reminders, timers, daily admin), german (German grammar, vocabulary, practice material).",
+             ["agent": "One of: jobs, mentor, schedule, german.", "title": "A short title, 2 to 5 words.", "task": "The full task with everything the specialist needs to know."], required: ["agent", "title", "task"]),
+        tool("talk_to", "Switch the live conversation to a specialist (for example German practice with the tutor). The user talks to them directly until they say they're done.",
+             ["agent": "One of: jobs, mentor, schedule, german."], required: ["agent"]),
+        tool("set_timer", "Start a countdown timer; ZOOBIE announces it out loud when it ends.",
+             ["minutes": "Length in minutes (decimals allowed, e.g. 0.5).", "label": "What it's for, e.g. Pasta or Focus session."], required: ["minutes"]),
+        tool("list_timers", "List running timers and how much time is left.", [:], required: []),
+        tool("cancel_timer", "Cancel a running timer.", ["label": "The timer's label, or 'all'."], required: ["label"]),
+        tool("create_reminder", "Add a reminder to Apple Reminders, optionally with a due date and time.",
+             ["title": "The reminder.", "due": "Local date and time as YYYY-MM-DDTHH:MM (optional).", "notes": "Extra details (optional)."], required: ["title"]),
+        tool("list_events", "List Calendar events in a date range.",
+             ["from": "Start as YYYY-MM-DD or YYYY-MM-DDTHH:MM (default: today).", "to": "End, exclusive (default: one day after start)."], required: []),
+        tool("create_event", "Create a Calendar event.",
+             ["title": "Event title.", "start": "Local start as YYYY-MM-DDTHH:MM.", "end": "Local end as YYYY-MM-DDTHH:MM (default: one hour later).", "location": "Optional location."], required: ["title", "start"]),
+        tool("update_notebook", "Rewrite your notebook: the long-term memory you keep between conversations (trackers, the learner's level, preferences, ongoing work). Send the complete new notebook.",
+             ["content": "The full Markdown notebook."], required: ["content"]),
     ]
 
     private static func tool(_ name: String, _ description: String, _ params: [String: String], required: [String]) -> JSONValue {
@@ -81,7 +102,15 @@ public enum AgentAction: Sendable, Equatable {
     case typeText(String)
     case pressKeys(String)
     case readScreen
-    case startAgent(title: String, task: String)
+    case delegate(agent: Specialist.ID, title: String, task: String)
+    case talkTo(Specialist.ID)
+    case setTimer(seconds: Int, label: String)
+    case listTimers
+    case cancelTimer(String)
+    case createReminder(title: String, due: Date?, notes: String?)
+    case listEvents(from: Date, to: Date)
+    case createEvent(title: String, start: Date, end: Date, location: String?)
+    case updateNotebook(String)
     case shell(command: String, cwd: String?)
     case readFile(path: String)
     case writeFile(path: String, content: String)
@@ -131,9 +160,52 @@ public enum AgentAction: Sendable, Equatable {
             self = arg("keys").map(AgentAction.pressKeys) ?? missing("keys")
         case "read_screen":
             self = .readScreen
-        case "start_agent":
+        case "delegate":
             guard let task = arg("task") else { self = missing("task"); return }
-            self = .startAgent(title: arg("title") ?? String(task.prefix(40)), task: task)
+            guard let agent = arg("agent").flatMap(Specialist.resolve) else {
+                self = .invalid(name: name, reason: "agent must be one of jobs, mentor, schedule, german")
+                return
+            }
+            self = .delegate(agent: agent.id, title: arg("title") ?? String(task.prefix(40)), task: task)
+        case "talk_to":
+            guard let agent = arg("agent").flatMap(Specialist.resolve) else {
+                self = .invalid(name: name, reason: "agent must be one of jobs, mentor, schedule, german")
+                return
+            }
+            self = .talkTo(agent.id)
+        case "set_timer":
+            guard let minutes = arg("minutes").flatMap({ Double($0.replacingOccurrences(of: ",", with: ".")) }), minutes > 0 else {
+                self = .invalid(name: name, reason: "minutes must be a positive number")
+                return
+            }
+            self = .setTimer(seconds: max(1, Int((minutes * 60).rounded())), label: arg("label") ?? "Timer")
+        case "list_timers":
+            self = .listTimers
+        case "cancel_timer":
+            self = .cancelTimer(arg("label") ?? "all")
+        case "create_reminder":
+            guard let title = arg("title") else { self = missing("title"); return }
+            let due = arg("due")
+            if let due, LocalDate.parse(due) == nil {
+                self = .invalid(name: name, reason: "due must look like 2026-10-02T18:00")
+                return
+            }
+            self = .createReminder(title: title, due: due.flatMap(LocalDate.parse), notes: arg("notes"))
+        case "list_events":
+            let from = arg("from").flatMap(LocalDate.parse) ?? Calendar.current.startOfDay(for: Date())
+            let to = arg("to").flatMap(LocalDate.parse) ?? from.addingTimeInterval(86_400)
+            self = .listEvents(from: from, to: to)
+        case "create_event":
+            guard let title = arg("title") else { self = missing("title"); return }
+            guard let start = arg("start").flatMap(LocalDate.parse) else {
+                self = .invalid(name: name, reason: "start must look like 2026-10-02T18:00")
+                return
+            }
+            let end = arg("end").flatMap(LocalDate.parse) ?? start.addingTimeInterval(3600)
+            self = .createEvent(title: title, start: start, end: max(end, start.addingTimeInterval(60)), location: arg("location"))
+        case "update_notebook":
+            guard let content = args["content"]?.stringValue else { self = missing("content"); return }
+            self = .updateNotebook(content)
         case "run_shell":
             guard let command = arg("command") else { self = missing("command"); return }
             self = .shell(command: command, cwd: arg("cwd"))
@@ -160,7 +232,15 @@ public enum AgentAction: Sendable, Equatable {
         case .typeText: return "Type text"
         case .pressKeys(let keys): return "Press \(keys)"
         case .readScreen: return "Read the screen"
-        case .startAgent(let title, _): return "Start agent: \(title)"
+        case .delegate(let agent, let title, _): return "Delegate to \(Specialist.get(agent).defaultName): \(title)"
+        case .talkTo(let agent): return "Talk to \(Specialist.get(agent).defaultName)"
+        case .setTimer(let seconds, let label): return "Timer \(Self.duration(seconds)): \(label)"
+        case .listTimers: return "List timers"
+        case .cancelTimer(let label): return "Cancel timer: \(label)"
+        case .createReminder(let title, _, _): return "Add reminder: \(title)"
+        case .listEvents: return "Check calendar"
+        case .createEvent(let title, _, _, _): return "Add event: \(title)"
+        case .updateNotebook: return "Update notebook"
         case .shell: return "Run command"
         case .readFile: return "Read file"
         case .writeFile: return "Write file"
@@ -179,7 +259,17 @@ public enum AgentAction: Sendable, Equatable {
         case .typeText(let text): return text
         case .pressKeys(let keys): return keys
         case .readScreen: return ""
-        case .startAgent(_, let task): return task
+        case .delegate(_, _, let task): return task
+        case .talkTo(let agent): return Specialist.get(agent).role
+        case .setTimer(let seconds, let label): return "\(label) — \(Self.duration(seconds))"
+        case .listTimers: return ""
+        case .cancelTimer(let label): return label
+        case .createReminder(let title, let due, let notes):
+            return [title, due.map { "due " + LocalDate.describe($0) }, notes].compactMap { $0 }.joined(separator: " · ")
+        case .listEvents(let from, let to): return "\(LocalDate.describe(from)) → \(LocalDate.describe(to))"
+        case .createEvent(let title, let start, let end, let location):
+            return [title, "\(LocalDate.describe(start)) – \(LocalDate.describe(end))", location].compactMap { $0 }.joined(separator: " · ")
+        case .updateNotebook(let content): return "\(content.count) characters"
         case .shell(let command, let cwd): return cwd.map { "cd \($0) && \(command)" } ?? command
         case .readFile(let path), .listDirectory(let path): return path
         case .writeFile(let path, let content): return "\(path)  (\(content.count) chars)\n\n\(content.prefix(1200))"
@@ -204,7 +294,9 @@ public enum AgentAction: Sendable, Equatable {
         case .appleScript(let script): return Self.matches(Self.riskyScriptPattern, script)
         case .click(let target): return Self.matches(Self.riskyLabelPattern, target)
         case .pressKeys(let keys): return Self.riskyShortcuts.contains(Self.normalizedKeys(keys))
-        case .openApp, .media, .typeText, .readScreen, .startAgent, .readFile, .listDirectory, .openURL, .invalid: return false
+        case .openApp, .media, .typeText, .readScreen, .readFile, .listDirectory, .openURL, .invalid,
+             .delegate, .talkTo, .setTimer, .listTimers, .cancelTimer, .createReminder, .listEvents, .createEvent, .updateNotebook:
+            return false
         }
     }
 
@@ -216,6 +308,13 @@ public enum AgentAction: Sendable, Equatable {
         case .appleScript(let script): return Self.matches(Self.destructiveScriptPattern, script)
         default: return false
         }
+    }
+
+    static func duration(_ seconds: Int) -> String {
+        if seconds < 60 { return "\(seconds) s" }
+        let minutes = seconds / 60, rest = seconds % 60
+        if minutes < 60 { return rest == 0 ? "\(minutes) min" : "\(minutes) min \(rest) s" }
+        return "\(minutes / 60) h \(minutes % 60) min"
     }
 
     // MARK: Risk rules
@@ -396,13 +495,23 @@ public struct AgentExecutor: Sendable {
     public var workingDirectory: String
     public var timeout: TimeInterval
     public var outputLimit = 6000
-    /// Performs screen/keyboard/media actions, which need AppKit and live in the app.
+    /// Performs screen/keyboard/media/timer/agent actions, which need the app.
     public var ui: UIHandler?
+    /// Where update_notebook writes (set for specialists).
+    public var notebookURL: URL?
 
-    public init(workingDirectory: String, timeout: TimeInterval, ui: UIHandler? = nil) {
+    public init(workingDirectory: String, timeout: TimeInterval, ui: UIHandler? = nil, notebookURL: URL? = nil) {
         self.workingDirectory = (workingDirectory as NSString).expandingTildeInPath
         self.timeout = timeout
         self.ui = ui
+        self.notebookURL = notebookURL
+    }
+
+    private func runAppleScript(_ script: String) async -> String {
+        let result = await Shell.run("/usr/bin/osascript -e \(Shell.quote(script))", cwd: workingDirectory, timeout: timeout)
+        if result.timedOut { return "Error: timed out after \(Int(timeout))s" }
+        if result.exitCode != 0 { return Self.explainAppleScriptError(result.output) }
+        return result.output.isEmpty ? "Done." : truncate(result.output)
     }
 
     public func execute(_ action: AgentAction) async -> String {
@@ -415,7 +524,21 @@ public struct AgentExecutor: Sendable {
             if result.timedOut { return "AppleScript timed out after \(Int(timeout))s" }
             if result.exitCode != 0 { return Self.explainAppleScriptError(result.output) }
             return result.output.isEmpty ? "Done." : truncate(result.output)
-        case .media, .click, .typeText, .pressKeys, .readScreen, .startAgent:
+        case .createReminder(let title, let due, let notes):
+            return await runAppleScript(AppleAppScripts.createReminder(title: title, due: due, notes: notes))
+        case .listEvents(let from, let to):
+            return await runAppleScript(AppleAppScripts.listEvents(from: from, to: to))
+        case .createEvent(let title, let start, let end, let location):
+            return await runAppleScript(AppleAppScripts.createEvent(title: title, start: start, end: end, location: location))
+        case .updateNotebook(let content):
+            guard let notebookURL else { return "Error: only specialists keep a notebook." }
+            do {
+                try content.write(to: notebookURL, atomically: true, encoding: .utf8)
+                return "Notebook saved."
+            } catch {
+                return "Error saving notebook: \(error.localizedDescription)"
+            }
+        case .media, .click, .typeText, .pressKeys, .readScreen, .delegate, .talkTo, .setTimer, .listTimers, .cancelTimer:
             guard let ui else { return "Error: \(action.title) isn't available here." }
             return await ui(action)
         case .shell(let command, let cwd):
@@ -611,7 +734,7 @@ public struct AgentLoop: Sendable {
             await emit(.turnStarted)
             var content = ""
             var calls: [ToolCall] = []
-            for try await chunk in client.chat(model: model, messages: messages, tools: AgentTools.definitions(excluding: ["start_agent"]), options: options) {
+            for try await chunk in client.chat(model: model, messages: messages, tools: AgentTools.definitions(excluding: AgentTools.claudeOnly.union(AgentTools.specialistOnly)), options: options) {
                 guard let message = chunk.message else { continue }
                 if let toolCalls = message.toolCalls { calls += toolCalls }
                 if !message.content.isEmpty {

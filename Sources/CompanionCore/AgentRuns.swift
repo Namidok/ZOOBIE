@@ -3,12 +3,14 @@ import Foundation
 /// One background agent job, persisted so the list survives restarts.
 public struct AgentRun: Codable, Identifiable, Sendable, Equatable {
     public enum Status: String, Codable, Sendable {
-        case running, waiting, done, failed, cancelled
+        case queued, running, waiting, done, failed, cancelled
 
-        public var isActive: Bool { self == .running || self == .waiting }
+        public var isActive: Bool { self == .queued || self == .running || self == .waiting }
     }
 
     public var id: UUID
+    /// Which specialist owns it (nil for runs from before specialists existed).
+    public var agent: Specialist.ID?
     public var title: String
     public var task: String
     public var status: Status
@@ -20,11 +22,12 @@ public struct AgentRun: Codable, Identifiable, Sendable, Equatable {
     public var reportPath: String?
     public var error: String?
 
-    public init(title: String, task: String) {
+    public init(title: String, task: String, agent: Specialist.ID? = nil) {
         id = UUID()
+        self.agent = agent
         self.title = title
         self.task = task
-        status = .running
+        status = agent == nil ? .running : .queued
         createdAt = Date()
         steps = []
     }

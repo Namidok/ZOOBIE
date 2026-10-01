@@ -117,7 +117,7 @@ Sources/Companion/       the app
 Diagnostics — every request, action and result is logged locally:
 
 ```bash
-log show --last 30m --style compact --predicate 'subsystem == "local.companion.agent"'
+/usr/bin/log show --last 30m --style compact --predicate 'subsystem == "local.companion.agent"'
 ```
 
 ```bash

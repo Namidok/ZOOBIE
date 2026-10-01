@@ -28,13 +28,13 @@ func drawIcon(size: CGFloat) -> NSBitmapImageRep {
     context.clip()
     let space = CGColorSpaceCreateDeviceRGB()
     let base = CGGradient(colorsSpace: space, colors: [
-        NSColor(calibratedRed: 0.12, green: 0.14, blue: 0.17, alpha: 1).cgColor,
-        NSColor(calibratedRed: 0.04, green: 0.05, blue: 0.06, alpha: 1).cgColor,
+        NSColor(calibratedRed: 0.09, green: 0.09, blue: 0.10, alpha: 1).cgColor,
+        NSColor(calibratedRed: 0.03, green: 0.03, blue: 0.035, alpha: 1).cgColor,
     ] as CFArray, locations: [0, 1])!
     context.drawLinearGradient(base, start: CGPoint(x: 512, y: 924), end: CGPoint(x: 512, y: 100), options: [])
     let bloom = CGGradient(colorsSpace: space, colors: [
-        NSColor(calibratedRed: 0.23, green: 0.51, blue: 0.96, alpha: 0.55).cgColor,
-        NSColor(calibratedRed: 0.23, green: 0.51, blue: 0.96, alpha: 0).cgColor,
+        NSColor(calibratedRed: 0.96, green: 0.65, blue: 0.14, alpha: 0.42).cgColor,
+        NSColor(calibratedRed: 0.96, green: 0.65, blue: 0.14, alpha: 0).cgColor,
     ] as CFArray, locations: [0, 1])!
     context.drawRadialGradient(bloom, startCenter: CGPoint(x: 470, y: 540), startRadius: 0,
                                endCenter: CGPoint(x: 470, y: 540), endRadius: 420, options: [])
@@ -51,17 +51,17 @@ func drawIcon(size: CGFloat) -> NSBitmapImageRep {
     // One solid shape with rounded corners: the triangle merged with its own rounded stroke.
     let pointer = outline.union(outline.copy(strokingWithWidth: 40, lineCap: .round, lineJoin: .round, miterLimit: 10))
     context.saveGState()
-    context.setShadow(offset: .zero, blur: 70, color: NSColor(calibratedRed: 0.3, green: 0.55, blue: 1, alpha: 0.9).cgColor)
+    context.setShadow(offset: .zero, blur: 70, color: NSColor(calibratedRed: 1.0, green: 0.68, blue: 0.2, alpha: 0.85).cgColor)
     context.addPath(pointer)
-    context.setFillColor(NSColor(calibratedRed: 0.25, green: 0.52, blue: 0.96, alpha: 1).cgColor)
+    context.setFillColor(NSColor(calibratedRed: 0.96, green: 0.65, blue: 0.14, alpha: 1).cgColor)
     context.fillPath()
     context.restoreGState()
     context.saveGState()
     context.addPath(pointer)
     context.clip()
     let fill = CGGradient(colorsSpace: space, colors: [
-        NSColor(calibratedRed: 0.42, green: 0.68, blue: 1.0, alpha: 1).cgColor,
-        NSColor(calibratedRed: 0.15, green: 0.39, blue: 0.92, alpha: 1).cgColor,
+        NSColor(calibratedRed: 1.0, green: 0.77, blue: 0.42, alpha: 1).cgColor,
+        NSColor(calibratedRed: 0.85, green: 0.47, blue: 0.02, alpha: 1).cgColor,
     ] as CFArray, locations: [0, 1])!
     context.drawLinearGradient(fill, start: CGPoint(x: glyph.minX, y: glyph.maxY), end: CGPoint(x: glyph.maxX, y: glyph.minY), options: [])
     context.restoreGState()

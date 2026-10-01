@@ -85,7 +85,7 @@ struct PanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(VisualEffectBackground())
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.white.opacity(0.1)))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(DS.Colors.borderSubtle))
         .onExitCommand { controller.escape() }
         .onChange(of: controller.focusToken) { inputFocused = true }
         .onChange(of: controller.pendingAction) { if controller.pendingAction != nil { inputFocused = false } }
@@ -94,7 +94,7 @@ struct PanelView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(controller.isBusy ? Color.orange : Color.green)
+                .fill(controller.isBusy ? DS.Colors.accent : DS.Colors.success)
                 .frame(width: 7, height: 7)
             Text("ZOOBIE").font(.system(size: 12, weight: .semibold))
             Text(controller.activeModel ?? controller.config.chatModel)
@@ -109,7 +109,7 @@ struct PanelView: View {
                     .lineLimit(1)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
-                    .background(Capsule().fill(Color.white.opacity(controller.includeScreen ? 0.1 : 0.04)))
+                    .background(Capsule().fill(controller.includeScreen ? DS.Colors.surface3 : DS.Colors.surface2))
             }
             .help("Include what's on screen with your question")
             iconButton("arrow.clockwise", help: "Re-read the screen", action: controller.recapture)
@@ -146,7 +146,7 @@ struct PanelView: View {
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)
-                .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.1)))
+                .background(RoundedRectangle(cornerRadius: 4).fill(DS.Colors.surface3))
             Text(label)
         }
     }
@@ -173,7 +173,7 @@ struct PanelView: View {
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: isAgent ? "terminal" : "sparkle")
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(isAgent ? Color.orange : Color.accentColor)
+                .foregroundStyle(isAgent ? DS.Colors.accentBright : DS.Colors.accent)
             TextField(controller.pendingAction != nil ? "Waiting for your approval…" : "Ask about your screen — \"agent:\" runs tasks",
                       text: $controller.input, axis: .vertical)
                 .textFieldStyle(.plain)
@@ -211,7 +211,7 @@ private struct MessageRow: View {
                     .textSelection(.enabled)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.28)))
+                    .background(RoundedRectangle(cornerRadius: 10).fill(DS.Colors.accent.opacity(0.28)))
             }
         case .assistant:
             if message.text.isEmpty {
@@ -224,7 +224,7 @@ private struct MessageRow: View {
         case .error:
             Label(message.text, systemImage: "exclamationmark.triangle.fill")
                 .font(.system(size: 12))
-                .foregroundStyle(Color.red.opacity(0.9))
+                .foregroundStyle(DS.Colors.danger)
                 .textSelection(.enabled)
         case .note:
             Text(message.text)
@@ -282,19 +282,19 @@ private struct StepCard: View {
                     Button(expanded ? "Show less" : "Show all \(lines.count) lines") { expanded.toggle() }
                         .buttonStyle(.plain)
                         .font(.system(size: 10))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(DS.Colors.accent)
                 }
             }
         }
         .padding(8)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.05)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(DS.Colors.surface2))
     }
 
     @ViewBuilder private var statusIcon: some View {
         switch state {
-        case .awaiting: Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
+        case .awaiting: Image(systemName: "hand.raised.fill").foregroundStyle(DS.Colors.warning)
         case .running: ProgressView().controlSize(.mini)
-        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(DS.Colors.success)
         case .skipped: Image(systemName: "arrow.uturn.right.circle").foregroundStyle(.secondary)
         case .stopped: Image(systemName: "stop.circle").foregroundStyle(.secondary)
         }
@@ -318,14 +318,14 @@ private struct ConfirmCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
+                Image(systemName: "hand.raised.fill").foregroundStyle(DS.Colors.warning)
                 Text("Approve step: \(action.title)").font(.system(size: 12, weight: .semibold))
                 if action.isDestructive {
                     Text("CAUTION")
                         .font(.system(size: 9, weight: .bold))
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.red.opacity(0.8)))
+                        .background(Capsule().fill(DS.Colors.danger))
                 }
                 Spacer()
             }
@@ -351,7 +351,7 @@ private struct ConfirmCard: View {
             .controlSize(.small)
         }
         .padding(12)
-        .background(Color.orange.opacity(0.08))
+        .background(DS.Colors.accent.opacity(0.08))
         .overlay(alignment: .top) { Divider().opacity(0.4) }
     }
 }
@@ -432,43 +432,47 @@ struct MarkdownView: View {
     }
 }
 
+/// High-contrast monospaced code. Click anywhere on it to copy.
 struct CodeBlock: View {
     let language: String
     let code: String
     @State private var copied = false
+    @State private var hovering = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(language.isEmpty ? "code" : language)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text(language.isEmpty ? "code" : language.lowercased())
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(DS.Colors.textTertiary)
                 Spacer()
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(code, forType: .string)
-                    copied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
-                } label: {
-                    Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: 10))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                Label(copied ? "Copied" : "Click to copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(copied ? DS.Colors.success : (hovering ? DS.Colors.accent : DS.Colors.textTertiary))
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Color.black.opacity(0.2))
+            .padding(.vertical, 6)
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(code)
-                    .font(.system(size: 12, design: .monospaced))
-                    .textSelection(.enabled)
+                    .font(.system(size: 12.5, weight: .regular, design: .monospaced))
+                    .foregroundStyle(DS.Colors.codeText)
                     .fixedSize(horizontal: true, vertical: false)
-                    .padding(10)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
             }
         }
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.35)))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(DS.Colors.codeBackground))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(hovering ? DS.Colors.accent.opacity(0.6) : DS.Colors.borderSubtle))
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .dsPointerOnHover()
+        .onTapGesture {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(code, forType: .string)
+            copied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+        }
+        .animation(.easeOut(duration: 0.15), value: hovering)
     }
 }
 

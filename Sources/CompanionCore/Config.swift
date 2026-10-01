@@ -77,6 +77,8 @@ public struct CompanionConfig: Codable, Sendable, Equatable {
     public var voice = "bf_emma"
     public var speechSpeed = 1.05
     public var approvalPolicy = ApprovalPolicy.risky
+    /// Your names for the four specialists, keyed by id (jobs, mentor, schedule, german).
+    public var agentNames: [String: String] = [:]
     public var agentWorkingDirectory = "~"
     public var agentMaxSteps = 12
     public var commandTimeout: Double = 60
@@ -86,7 +88,7 @@ public struct CompanionConfig: Codable, Sendable, Equatable {
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case ollamaURL, brain, claudeModel, claudeEffort, chatModel, visionModel, visionMode, speakReplies, speakTypedReplies, showBuddy, voice, speechSpeed, approvalPolicy
+        case ollamaURL, brain, claudeModel, claudeEffort, chatModel, visionModel, visionMode, speakReplies, speakTypedReplies, showBuddy, voice, speechSpeed, approvalPolicy, agentNames
         case agentWorkingDirectory, agentMaxSteps, commandTimeout, numCtx, keepAlive
     }
 
@@ -106,6 +108,7 @@ public struct CompanionConfig: Codable, Sendable, Equatable {
         voice = try c.decodeIfPresent(String.self, forKey: .voice) ?? d.voice
         speechSpeed = try c.decodeIfPresent(Double.self, forKey: .speechSpeed) ?? d.speechSpeed
         approvalPolicy = try c.decodeIfPresent(ApprovalPolicy.self, forKey: .approvalPolicy) ?? d.approvalPolicy
+        agentNames = try c.decodeIfPresent([String: String].self, forKey: .agentNames) ?? d.agentNames
         agentWorkingDirectory = try c.decodeIfPresent(String.self, forKey: .agentWorkingDirectory) ?? d.agentWorkingDirectory
         agentMaxSteps = try c.decodeIfPresent(Int.self, forKey: .agentMaxSteps) ?? d.agentMaxSteps
         commandTimeout = try c.decodeIfPresent(Double.self, forKey: .commandTimeout) ?? d.commandTimeout

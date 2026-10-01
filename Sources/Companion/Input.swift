@@ -122,7 +122,9 @@ final class SpeechInput {
     var onLevel: (Float) -> Void = { _ in }
     private(set) var isRunning = false
 
-    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    /// Recognition language: en-US normally, de-DE during German practice.
+    var localeIdentifier = "en-US"
+    private var recognizer: SFSpeechRecognizer?
     private let engine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
@@ -138,6 +140,9 @@ final class SpeechInput {
     }
 
     func start() throws {
+        if recognizer?.locale.identifier != localeIdentifier {
+            recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier))
+        }
         guard let recognizer, recognizer.supportsOnDeviceRecognition else { throw SpeechError.onDeviceUnavailable }
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)

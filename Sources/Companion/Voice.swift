@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import CompanionCore
+import NaturalLanguage
 
 /// Runs the local Kokoro neural TTS server installed by `scripts/setup-voice.sh` and talks to it over
 /// 127.0.0.1. If it isn't installed or doesn't answer, narration falls back to an Apple voice.
@@ -91,7 +92,7 @@ final class Narrator: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelega
     private var engine = Engine.silent
     private var speed = 1.0
     private var session = 0
-    private var queue: [(step: NarrationStep, audio: Task<Data?, Never>?)] = []
+    private var queue: [(step: NarrationStep, audio: Task<Data?, Never>?, german: Bool)] = []
     private var inputFinished = false
     private var playTask: Task<Void, Never>?
     private var player: AVAudioPlayer?
@@ -112,12 +113,14 @@ final class Narrator: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelega
 
     func enqueue(_ step: NarrationStep) {
         guard isActive else { return }
+        // German sentences (German practice, quotes) are spoken by a German voice instead of the English one.
+        let german = engine != .silent && Self.isGerman(step.text)
         var audio: Task<Data?, Never>?
-        if case .neural(let voice) = engine {
+        if !german, case .neural(let voice) = engine {
             let text = step.text, speed = self.speed
             audio = Task.detached(priority: .userInitiated) { await VoiceServer.synthesize(text, voice: voice, speed: speed) }
         }
-        queue.append((step, audio))
+        queue.append((step, audio, german))
         startPlaybackIfNeeded()
     }
 
@@ -156,7 +159,11 @@ final class Narrator: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelega
                 let audio = await item.audio?.value
                 guard self.session == session else { return }
                 self.onStep(item.step)
-                await self.play(item.step.text, audio: audio)
+                if item.german {
+                    await self.speakWithSystemVoice(item.step.text, name: "Anna", language: "de")
+                } else {
+                    await self.play(item.step.text, audio: audio)
+                }
             }
             guard let self, self.session == session else { return }
             self.playTask = nil
@@ -183,9 +190,9 @@ final class Narrator: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelega
         }
     }
 
-    private func speakWithSystemVoice(_ text: String, name: String) async {
+    private func speakWithSystemVoice(_ text: String, name: String, language: String = "en") async {
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = Self.systemVoice(named: name)
+        utterance.voice = Self.systemVoice(named: name, language: language)
         utterance.rate = min(0.6, Float(0.5 * speed))
         await wait(for: ObjectIdentifier(utterance)) { self.synthesizer.speak(utterance) }
     }
@@ -205,12 +212,21 @@ final class Narrator: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelega
     }
 
     /// The best installed quality of the named Apple voice, else any decent English one.
-    static func systemVoice(named name: String) -> AVSpeechSynthesisVoice? {
+    static func systemVoice(named name: String, language: String = "en") -> AVSpeechSynthesisVoice? {
         let english = AVSpeechSynthesisVoice.speechVoices().filter {
-            $0.language.hasPrefix("en") && !$0.voiceTraits.contains(.isNoveltyVoice) && !$0.voiceTraits.contains(.isPersonalVoice)
+            $0.language.hasPrefix(language) && !$0.voiceTraits.contains(.isNoveltyVoice) && !$0.voiceTraits.contains(.isPersonalVoice)
         }
         let named = english.filter { $0.name.localizedCaseInsensitiveContains(name) }
         return (named.isEmpty ? english : named).max { $0.quality.rawValue < $1.quality.rawValue }
+    }
+
+    /// Confidently German (short sentences are ambiguous, so require a clear majority).
+    static func isGerman(_ text: String) -> Bool {
+        guard text.split(separator: " ").count >= 2 else { return false }
+        let recognizer = NLLanguageRecognizer()
+        recognizer.languageConstraints = [.english, .german]
+        recognizer.processString(text)
+        return (recognizer.languageHypotheses(withMaximum: 2)[.german] ?? 0) > 0.7
     }
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {

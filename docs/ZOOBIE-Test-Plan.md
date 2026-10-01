@@ -8,7 +8,7 @@
 - **Today** column: ✅ should pass now · ⚠️ partly works · ❌ not built yet (a failure here is a roadmap item, not a bug).
 - Record each result as **Pass / Fail / Flaky** (flaky = passes some runs but not all; run each important test **3 times**).
 - When something fails, grab the log right after:
-  `log show --last 10m --style compact --predicate 'subsystem == "local.companion.agent"'`
+  `/usr/bin/log show --last 10m --style compact --predicate 'subsystem == "local.companion.agent"'`
 - **"Perfect" =** every ✅ test passes 3/3, every ⚠️ is fixed to ✅, the ❌ items you care about are built and pass, and the performance targets in section 9 are met for a full week of daily use without you opening Claude CLI.
 
 ---
@@ -107,6 +107,21 @@
 
 ---
 
+## 6b. The four specialists
+
+| ID | Do this | Expected | Today |
+|---|---|---|---|
+| SP1 | "agent: find 10 Werkstudent jobs in Munich for CS students" | Goes to **Job Hunter**; card shows it working; report with a table | ✅ |
+| SP2 | "agent: explain FastAPI dependency injection with an example project" | Goes to **Dev Mentor** | ✅ |
+| SP3 | "agent: block 2 hours tomorrow evening for DSA in my calendar" | Goes to **Scheduler**; event created | ✅ |
+| SP4 | "Let's practice German" | Switches to **German Tutor** (avatar in notch); German spoken in a German voice, English in Emma's | ✅ |
+| SP5 | During practice: "back to ZOOBIE" | Returns to ZOOBIE | ✅ |
+| SP6 | Toggle "I'll speak German", answer in German | Transcribed in German (needs German dictation downloaded) | ⚠️ |
+| SP7 | Give Job Hunter 3 tasks quickly | They queue and run one after another; other specialists still work in parallel | ✅ |
+| SP8 | Next day, open Job Hunter's notebook | Application tracker it maintained is there | ✅ |
+| SP9 | "Forget memory" on a specialist | Notebook and thread cleared | ✅ |
+| SP10 | Add your avatars + names | Cards and notch show them | ✅ |
+
 ## 7. Your real day
 
 ### A. Learning
@@ -117,7 +132,7 @@
 | L2 | "Quiz me on what's on this page" | Asks questions one by one, checks answers | ⚠️ (works as conversation; no score tracking) |
 | L3 | "Make me notes from this page and save them" | Notes saved to a file you can find | ✅ |
 | L4 | "Start an agent to make a 2-week study plan for DSA" | Report with a day-by-day plan | ✅ |
-| L5 | Next day: "continue where we left off yesterday" | Remembers yesterday | ❌ (memory is per-session) |
+| L5 | Next day: "German tutor, continue where we left off" | Remembers yesterday (specialist notebook + thread) | ✅ (specialists remember; ZOOBIE itself is per-session) |
 
 ### B. Coding assignments (replacing Claude CLI)
 
@@ -154,10 +169,10 @@
 
 | ID | Scenario | Expected | Today |
 |---|---|---|---|
-| T1 | "Set a timer for 25 minutes" | Timer runs; ZOOBIE announces when done | ❌ (no timer tool yet) |
-| T2 | "Remind me at 6 pm to submit the assignment" | Reminder appears in Reminders/notification | ⚠️ (possible via AppleScript to Reminders, not guaranteed) |
+| T1 | "Set a timer for 25 minutes" | Countdown in the notch; chime + spoken "done" | ✅ |
+| T2 | "Remind me at 6 pm to submit the assignment" | Reminder with the right due time in Apple Reminders (asks Automation permission once) | ✅ |
 | T3 | "Pomodoro: 25 work / 5 break, 4 rounds" | Runs the cycle with announcements | ❌ |
-| T4 | "What's on my calendar today?" | Reads Calendar | ⚠️ (AppleScript; needs Automation permission) |
+| T4 | "What's on my calendar today?" | Reads today's events from Calendar | ✅ |
 
 ---
 
@@ -202,7 +217,7 @@ What I said/did: "Open a new Safari tab and search for …"
 What happened: …
 Expected: …
 How often: 2/3 runs
-Log: (paste log show output)
+Log: (paste /usr/bin/log show output)
 ```
 
 ## Roadmap the ❌ / ⚠️ items point to

@@ -1,26 +1,30 @@
 import AppKit
 import SwiftUI
 
-/// ZOOBIE's design tokens: a blue accent on dark surfaces, shared by the buddy, cards, panel and onboarding.
+/// ZOOBIE's design tokens — "dark mode simple anime": matte black surfaces, soft charcoal borders and
+/// warm amber accents. Shared by the notch, pointer, cards, settings and onboarding.
 enum DS {
     enum Colors {
-        static let background = Color(hex: 0x0E1011)
-        static let surface1 = Color(hex: 0x15181A)
-        static let surface2 = Color(hex: 0x1D2023)
-        static let surface3 = Color(hex: 0x262A2E)
-        static let borderSubtle = Color.white.opacity(0.08)
-        static let borderStrong = Color.white.opacity(0.16)
+        static let background = Color(hex: 0x0A0A0B)
+        static let surface1 = Color(hex: 0x121214)
+        static let surface2 = Color(hex: 0x19191C)
+        static let surface3 = Color(hex: 0x232327)
+        static let borderSubtle = Color(hex: 0x2A2A2F)
+        static let borderStrong = Color(hex: 0x3B3B42)
 
-        static let textPrimary = Color(hex: 0xECEEF0)
-        static let textSecondary = Color(hex: 0xA9B0B6)
-        static let textTertiary = Color(hex: 0x6B737A)
+        static let textPrimary = Color(hex: 0xEFECE6)
+        static let textSecondary = Color(hex: 0xA9A39B)
+        static let textTertiary = Color(hex: 0x6E6962)
 
-        static let accent = Color(hex: 0x3B82F6)
-        static let accentBright = Color(hex: 0x60A5FA)
-        static let accentDeep = Color(hex: 0x2563EB)
-        static let success = Color(hex: 0x22C55E)
-        static let warning = Color(hex: 0xF59E0B)
-        static let danger = Color(hex: 0xEF4444)
+        static let accent = Color(hex: 0xF5A524)
+        static let accentBright = Color(hex: 0xFFC46B)
+        static let accentDeep = Color(hex: 0xD97706)
+        static let success = Color(hex: 0x86C98A)
+        static let warning = Color(hex: 0xF5A524)
+        static let danger = Color(hex: 0xEF5B5B)
+        /// Code blocks: near-black with crisp off-white text.
+        static let codeBackground = Color(hex: 0x060607)
+        static let codeText = Color(hex: 0xF4F1EA)
     }
 
     enum Radius {
@@ -89,7 +93,8 @@ struct DSButtonStyle: ButtonStyle {
 
     private var foreground: Color {
         switch kind {
-        case .primary, .destructive: return .white
+        case .primary: return Color(hex: 0x1A1205) // dark text on amber reads crisply
+        case .destructive: return .white
         case .secondary: return DS.Colors.textPrimary
         case .ghost: return DS.Colors.textSecondary
         }
@@ -118,7 +123,7 @@ struct DSSegmented<Value: Hashable>: View {
                         .font(.system(size: 11, weight: .semibold))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 5)
-                        .foregroundStyle(selection == value ? Color.white : DS.Colors.textSecondary)
+                        .foregroundStyle(selection == value ? Color(hex: 0x1A1205) : DS.Colors.textSecondary)
                         .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(selection == value ? DS.Colors.accent : .clear))
                         .contentShape(Rectangle())
                 }

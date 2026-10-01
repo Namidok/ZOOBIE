@@ -258,20 +258,30 @@ import Testing
 
     @Test func claudeToolsUseAnthropicShape() {
         let tools = ClaudeAgentLoop.tools(for: .assistant)
-        #expect(tools.count == AgentTools.names.count + 2) // + web_search, web_fetch
+        #expect(tools.count == AgentTools.names.count - AgentTools.specialistOnly.count + 2) // + web_search, web_fetch
         guard case .object(let first)? = tools.first else { Issue.record("no tools"); return }
         #expect(first["input_schema"] != nil)
         #expect(first["eager_input_streaming"] == .bool(true))
     }
 
-    @Test func workersNeverGetScreenOrKeyboardTools() {
-        let names = ClaudeAgentLoop.tools(for: .worker).compactMap { tool -> String? in
-            guard case .object(let object) = tool else { return nil }
-            return object["name"]?.stringValue
+    @Test func specialistsGetOnlyTheirTools() {
+        func names(_ role: ClaudeAgentLoop.Role) -> Set<String> {
+            Set(ClaudeAgentLoop.tools(for: role).compactMap { tool -> String? in
+                guard case .object(let object) = tool else { return nil }
+                return object["name"]?.stringValue
+            })
         }
-        #expect(names.contains("web_search") && names.contains("run_shell"))
-        for name in AgentTools.foregroundOnly { #expect(!names.contains(name), "\(name)") }
-        guard case .object(let search)? = ClaudeAgentLoop.tools(for: .worker).first(where: {
+        for specialist in Specialist.all {
+            let tools = names(.specialist(specialist, name: specialist.defaultName, notebook: "", conversation: false))
+            #expect(tools.contains("web_search") && tools.contains("update_notebook"))
+            for name in AgentTools.foregroundOnly { #expect(!tools.contains(name), "\(specialist.id): \(name)") }
+        }
+        let scheduler = names(.specialist(Specialist.get(.schedule), name: "x", notebook: "", conversation: false))
+        #expect(scheduler.contains("set_timer") && scheduler.contains("create_event") && !scheduler.contains("run_shell"))
+        let assistant = names(.assistant)
+        #expect(assistant.contains("delegate") && assistant.contains("set_timer") && !assistant.contains("update_notebook"))
+        let worker = ClaudeAgentLoop.Role.specialist(Specialist.get(.jobs), name: "x", notebook: "", conversation: false)
+        guard case .object(let search)? = ClaudeAgentLoop.tools(for: worker).first(where: {
             if case .object(let o) = $0 { return o["name"] == .string("web_search") } else { return false }
         }) else { Issue.record("no web_search"); return }
         #expect(search["eager_input_streaming"] == nil) // only valid on client tools
@@ -294,12 +304,38 @@ import Testing
         #expect(try String(contentsOfFile: done.reportPath!, encoding: .utf8).contains("# Monitors"))
     }
 
+    @Test func calendarScriptsUseStructuredDates() throws {
+        let start = try #require(LocalDate.parse("2026-10-02T18:30"))
+        let script = AppleAppScripts.createEvent(title: "Submit \"DSA\" A3", start: start, end: start.addingTimeInterval(3600), location: nil)
+        #expect(script.contains("set year of startDate to 2026"))
+        #expect(script.contains("set month of startDate to 10"))
+        #expect(script.contains("set time of startDate to 66600")) // 18:30
+        #expect(script.contains(#"summary:"Submit \"DSA\" A3""#))
+        #expect(LocalDate.parse("2026-10-02") != nil && LocalDate.parse("next friday") == nil)
+    }
+
+    @Test func specialistMemoryPersists() {
+        let store = SpecialistStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent("zoobie-spec-\(UUID().uuidString)"))
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        try? "# Level: A2".write(to: store.notebookURL(.german), atomically: true, encoding: .utf8)
+        store.append([ChatMessage(role: .user, content: "Hallo"), ChatMessage(role: .assistant, content: "Hallo! Wie geht's?")], to: .german)
+        #expect(store.notebook(.german) == "# Level: A2")
+        #expect(store.thread(.german).count == 2)
+        store.clear(.german)
+        #expect(store.thread(.german).isEmpty && store.notebook(.german).isEmpty)
+        #expect(Specialist.resolve("Deutsch tutor")?.id == .german && Specialist.resolve("resume helper")?.id == .jobs)
+    }
+
     @Test func parsesNewTools() {
         #expect(AgentAction(call: ToolCall(name: "open_app", arguments: ["name": .string("Spotify")])) == .openApp("Spotify"))
         #expect(AgentAction(call: ToolCall(name: "media_control", arguments: ["command": .string("Play_Pause")])) == .media("play_pause"))
         #expect(AgentAction(call: ToolCall(name: "click", arguments: ["target": .number(12)])) == .click(target: "12"))
         #expect(AgentAction(call: ToolCall(name: "read_screen", arguments: [:])) == .readScreen)
-        #expect(AgentAction(call: ToolCall(name: "start_agent", arguments: ["title": .string("Monitors"), "task": .string("Find monitors")])) == .startAgent(title: "Monitors", task: "Find monitors"))
+        #expect(AgentAction(call: ToolCall(name: "delegate", arguments: ["agent": .string("Job Hunter"), "title": .string("Internships"), "task": .string("Find internships")])) == .delegate(agent: .jobs, title: "Internships", task: "Find internships"))
+        #expect(AgentAction(call: ToolCall(name: "talk_to", arguments: ["agent": .string("german")])) == .talkTo(.german))
+        #expect(AgentAction(call: ToolCall(name: "set_timer", arguments: ["minutes": .number(25), "label": .string("Focus")])) == .setTimer(seconds: 1500, label: "Focus"))
+        #expect(AgentAction(call: ToolCall(name: "set_timer", arguments: ["minutes": .string("0.5")])) == .setTimer(seconds: 30, label: "Timer"))
+        if case .invalid = AgentAction(call: ToolCall(name: "create_event", arguments: ["title": .string("x"), "start": .string("tomorrow 6pm")])) {} else { Issue.record("expected invalid date") }
         if case .invalid = AgentAction(call: ToolCall(name: "media_control", arguments: ["command": .string("louder")])) {} else { Issue.record("expected invalid") }
         #expect(AgentAction.normalizedKeys("Shift + Command + T") == "shift+cmd+t")
     }

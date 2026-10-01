@@ -6,6 +6,8 @@ import Foundation
 public enum ClaudeError: LocalizedError {
     case missingKey
     case unauthorized
+    /// The Anthropic account has no API credits (separate from a Claude.ai subscription).
+    case noCredits
     case http(Int, String)
     case network(Error)
 
@@ -13,6 +15,7 @@ public enum ClaudeError: LocalizedError {
         switch self {
         case .missingKey: return "No Claude API key yet. Add one in ZOOBIE’s Settings (hover the notch)."
         case .unauthorized: return "Claude rejected the API key. Update it in ZOOBIE’s Settings (hover the notch)."
+        case .noCredits: return "Your Anthropic API account is out of credits. Add credits at console.anthropic.com → Settings → Billing (a Claude.ai subscription doesn’t include API credits). Using the local model meanwhile."
         case .http(let code, let message): return "Claude returned HTTP \(code): \(message)"
         case .network(let error): return "Couldn't reach Claude: \(error.localizedDescription)"
         }
@@ -21,7 +24,7 @@ public enum ClaudeError: LocalizedError {
     /// Worth retrying on the local model instead (offline, overloaded, server trouble).
     public var suggestsLocalFallback: Bool {
         switch self {
-        case .network: return true
+        case .network, .noCredits: return true
         case .http(let code, _): return code == 429 || code >= 500
         case .missingKey, .unauthorized: return false
         }
@@ -105,7 +108,9 @@ public final class AnthropicClient: Sendable {
             var text = ""
             for try await line in bytes.lines { text += line }
             if http.statusCode == 401 { throw ClaudeError.unauthorized }
-            throw ClaudeError.http(http.statusCode, Self.errorMessage(text) ?? text)
+            let message = Self.errorMessage(text) ?? text
+            if message.localizedCaseInsensitiveContains("credit balance") { throw ClaudeError.noCredits }
+            throw ClaudeError.http(http.statusCode, message)
         }
 
         var accumulator = TurnAccumulator()
@@ -281,14 +286,17 @@ public struct ClaudeAgentLoop: Sendable {
     public var maxSteps: Int
     public var policy: ApprovalPolicy
     public var role: Role
+    /// The user's names for the specialists, so ZOOBIE understands "ask Scrapeman to…".
+    public var specialistNames: [Specialist.ID: String] = [:]
     /// Captures a fresh screen for read_screen.
     public var captureScreen: @Sendable () async -> ScreenCapture?
 
     public enum Role: Sendable {
-        /// Talks with the user and acts on their Mac in the foreground.
+        /// ZOOBIE itself: talks with the user and acts on their Mac in the foreground.
         case assistant
-        /// A background agent: researches and works without touching the screen, mouse or keyboard.
-        case worker
+        /// One of the four specialists. In task mode it works in the background (never touching the
+        /// screen, mouse or keyboard) and returns a report; in conversation mode it talks with the user.
+        case specialist(Specialist, name: String, notebook: String, conversation: Bool)
     }
 
     public init(client: AnthropicClient, model: String, effort: String, executor: AgentExecutor, maxSteps: Int,
@@ -305,7 +313,16 @@ public struct ClaudeAgentLoop: Sendable {
 
     /// Client tools in the Messages API shape, plus Anthropic's server-side web tools.
     public static func tools(for role: Role) -> [JSONValue] {
-        let excluded: Set<String> = role == .worker ? AgentTools.foregroundOnly : []
+        let excluded: Set<String>
+        let searches: Double
+        switch role {
+        case .assistant:
+            excluded = AgentTools.specialistOnly
+            searches = 3
+        case .specialist(let specialist, _, _, let conversation):
+            excluded = AgentTools.names.subtracting(specialist.tools)
+            searches = conversation ? 4 : 12
+        }
         let client: [JSONValue] = AgentTools.definitions(excluding: excluded).compactMap { definition in
             guard case .object(let wrapper) = definition, case .object(let function)? = wrapper["function"] else { return nil }
             return .object([
@@ -315,7 +332,6 @@ public struct ClaudeAgentLoop: Sendable {
                 "eager_input_streaming": .bool(true),
             ])
         }
-        let searches: Double = role == .worker ? 12 : 3
         let server: [JSONValue] = [
             .object(["type": .string("web_search_20260209"), "name": .string("web_search"), "max_uses": .number(searches)]),
             .object(["type": .string("web_fetch_20260209"), "name": .string("web_fetch"), "max_uses": .number(searches)]),
@@ -332,9 +348,15 @@ public struct ClaudeAgentLoop: Sendable {
         confirm: @Sendable (AgentAction) async -> AgentDecision,
         emit: @Sendable (AgentEvent) async -> Void
     ) async throws -> String {
-        let system = role == .worker
-            ? Prompts.worker(workingDirectory: executor.workingDirectory, commandTimeout: Int(executor.timeout))
-            : Prompts.claude(workingDirectory: executor.workingDirectory, commandTimeout: Int(executor.timeout))
+        let system: String
+        switch role {
+        case .assistant:
+            system = Prompts.claude(workingDirectory: executor.workingDirectory, commandTimeout: Int(executor.timeout),
+                                    specialistNames: specialistNames)
+        case .specialist(let specialist, let name, let notebook, let conversation):
+            system = Prompts.specialist(specialist, name: name, notebook: notebook, conversation: conversation,
+                                        workingDirectory: executor.workingDirectory, commandTimeout: Int(executor.timeout))
+        }
         let tools = Self.tools(for: role)
         var messages: [JSONValue] = history.map { .object(["role": .string($0.role.rawValue), "content": .string($0.content)]) }
         let userContent: JSONValue = screen.map { .array($0.contentBlocks(caption: request)) } ?? .string(request)

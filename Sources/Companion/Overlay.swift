@@ -153,7 +153,7 @@ struct CardView: View {
         return HStack(spacing: 10) {
             Image(systemName: isAgent ? "terminal.fill" : "sparkle")
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(isAgent ? AnyShapeStyle(Color.orange) : AnyShapeStyle(BuddyStyle.gradient))
+                .foregroundStyle(isAgent ? AnyShapeStyle(DS.Colors.accentBright) : AnyShapeStyle(BuddyStyle.gradient))
             TextField("Ask about your screen · “agent:” runs tasks", text: $controller.input)
                 .textFieldStyle(.plain)
                 .font(.system(size: 15))
