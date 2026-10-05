@@ -9,6 +9,7 @@ public enum AgentTools {
         "open_app", "run_applescript", "media_control", "click", "type_text", "press_keys", "read_screen",
         "run_shell", "read_file", "write_file", "list_directory", "open_url", "delegate", "talk_to",
         "set_timer", "list_timers", "cancel_timer", "create_reminder", "list_events", "create_event", "update_notebook",
+        "web_search", "web_fetch",
     ]
 
     /// Tools that drive the screen, mouse or keyboard. Background agents never get these, so they
@@ -18,8 +19,9 @@ public enum AgentTools {
     /// Only specialists keep a notebook.
     public static let specialistOnly: Set<String> = ["update_notebook"]
 
-    /// Need the Claude brain (they hand work to Claude-powered specialists).
-    public static let claudeOnly: Set<String> = ["delegate", "talk_to"]
+    /// The local brain's own web tools. Claude has these built in on Anthropic's servers, so its
+    /// requests leave the client versions out.
+    public static let localOnly: Set<String> = ["web_search", "web_fetch"]
 
     /// The definitions minus the named tools.
     public static func definitions(excluding excluded: Set<String>) -> [JSONValue] {
@@ -64,6 +66,10 @@ public enum AgentTools {
              ["from": "Start as YYYY-MM-DD or YYYY-MM-DDTHH:MM (default: today).", "to": "End, exclusive (default: one day after start)."], required: []),
         tool("create_event", "Create a Calendar event.",
              ["title": "Event title.", "start": "Local start as YYYY-MM-DDTHH:MM.", "end": "Local end as YYYY-MM-DDTHH:MM (default: one hour later).", "location": "Optional location."], required: ["title", "start"]),
+        tool("web_search", "Search the web. Returns the top results with titles, links and snippets.",
+             ["query": "What to search for, e.g. software engineering internship Berlin."], required: ["query"]),
+        tool("web_fetch", "Read a web page as plain text, e.g. a result from web_search.",
+             ["url": "The full http(s) address."], required: ["url"]),
         tool("update_notebook", "Rewrite your notebook: the long-term memory you keep between conversations (trackers, the learner's level, preferences, ongoing work). Send the complete new notebook.",
              ["content": "The full Markdown notebook."], required: ["content"]),
     ]
@@ -116,6 +122,8 @@ public enum AgentAction: Sendable, Equatable {
     case writeFile(path: String, content: String)
     case listDirectory(path: String)
     case openURL(String)
+    case webSearch(String)
+    case webFetch(String)
     case invalid(name: String, reason: String)
 
     private static let placeholderPattern = try! NSRegularExpression(
@@ -218,6 +226,10 @@ public enum AgentAction: Sendable, Equatable {
             self = .listDirectory(path: arg("path") ?? ".")
         case "open_url":
             self = arg("url").map(AgentAction.openURL) ?? missing("url")
+        case "web_search":
+            self = arg("query").map(AgentAction.webSearch) ?? missing("query")
+        case "web_fetch":
+            self = arg("url").map(AgentAction.webFetch) ?? missing("url")
         default:
             self = .invalid(name: name, reason: "unknown tool; available: \(AgentTools.names.sorted().joined(separator: ", "))")
         }
@@ -246,6 +258,8 @@ public enum AgentAction: Sendable, Equatable {
         case .writeFile: return "Write file"
         case .listDirectory: return "List directory"
         case .openURL: return "Open"
+        case .webSearch: return "Search the web"
+        case .webFetch: return "Read web page"
         case .invalid(let name, _): return "Invalid call: \(name)"
         }
     }
@@ -274,6 +288,8 @@ public enum AgentAction: Sendable, Equatable {
         case .readFile(let path), .listDirectory(let path): return path
         case .writeFile(let path, let content): return "\(path)  (\(content.count) chars)\n\n\(content.prefix(1200))"
         case .openURL(let url): return url
+        case .webSearch(let query): return query
+        case .webFetch(let url): return url
         case .invalid(_, let reason): return reason
         }
     }
@@ -294,7 +310,7 @@ public enum AgentAction: Sendable, Equatable {
         case .appleScript(let script): return Self.matches(Self.riskyScriptPattern, script)
         case .click(let target): return Self.matches(Self.riskyLabelPattern, target)
         case .pressKeys(let keys): return Self.riskyShortcuts.contains(Self.normalizedKeys(keys))
-        case .openApp, .media, .typeText, .readScreen, .readFile, .listDirectory, .openURL, .invalid,
+        case .openApp, .media, .typeText, .readScreen, .readFile, .listDirectory, .openURL, .webSearch, .webFetch, .invalid,
              .delegate, .talkTo, .setTimer, .listTimers, .cancelTimer, .createReminder, .listEvents, .createEvent, .updateNotebook:
             return false
         }
@@ -589,6 +605,10 @@ public struct AgentExecutor: Sendable {
             let arg = target.contains("://") ? target : resolve(target)
             let result = await Shell.run("/usr/bin/open \(Shell.quote(arg))", cwd: workingDirectory, timeout: 15)
             return result.exitCode == 0 ? "Opened \(target)" : "Failed to open \(target): \(result.output)"
+        case .webSearch(let query):
+            return await WebTools.search(query)
+        case .webFetch(let url):
+            return await WebTools.fetch(url, limit: outputLimit)
         case .invalid(let name, let reason):
             return "Error: invalid call to \(name): \(reason)"
         }
@@ -713,27 +733,55 @@ public enum AgentEvent: Sendable {
 /// One brain for everything: it answers questions directly and acts through tools when asked to do
 /// something. Harmless actions run immediately; risky ones wait for the user's decision.
 public struct AgentLoop: Sendable {
+    public enum Role: Sendable {
+        /// ZOOBIE itself; `specialistNames` are the user's names for the specialists it can delegate to.
+        case assistant(specialistNames: [Specialist.ID: String] = [:])
+        /// A specialist on the local model: a background task, or a live conversation.
+        case specialist(Specialist, name: String, notebook: String, conversation: Bool)
+    }
+
     public var client: OllamaClient
     public var model: String
     public var options: OllamaClient.Options
     public var executor: AgentExecutor
     public var maxSteps: Int
     public var policy: ApprovalPolicy
+    public var role: Role
+    /// Awaited before every model turn — background agents use it to wait while the user talks to ZOOBIE.
+    public var beforeTurn: (@Sendable () async -> Void)?
 
-    public init(client: OllamaClient, model: String, options: OllamaClient.Options, executor: AgentExecutor, maxSteps: Int, policy: ApprovalPolicy = .risky) {
+    public init(client: OllamaClient, model: String, options: OllamaClient.Options, executor: AgentExecutor, maxSteps: Int,
+                policy: ApprovalPolicy = .risky, role: Role = .assistant()) {
         self.client = client
         self.model = model
         self.options = options
         self.executor = executor
         self.maxSteps = maxSteps
         self.policy = policy
+        self.role = role
     }
 
-    /// The local brain's tools: everything except Claude-only and specialist-only ones.
-    public static let tools = AgentTools.definitions(excluding: AgentTools.claudeOnly.union(AgentTools.specialistOnly))
+    /// ZOOBIE's local tools: everything but the specialists' notebook.
+    public static let tools = AgentTools.definitions(excluding: AgentTools.specialistOnly)
+
+    /// The tools for this role: a specialist gets its own set plus web search and reading.
+    public var tools: [JSONValue] {
+        switch role {
+        case .assistant: return Self.tools
+        case .specialist(let specialist, _, _, _):
+            return AgentTools.definitions(excluding: AgentTools.names.subtracting(specialist.tools.union(AgentTools.localOnly)))
+        }
+    }
 
     private func messages(request: String, screen: String?, history: [ChatMessage]) -> [ChatMessage] {
-        let system = Prompts.assistant(workingDirectory: executor.workingDirectory, commandTimeout: Int(executor.timeout))
+        let system: String
+        switch role {
+        case .assistant(let names):
+            system = Prompts.assistant(workingDirectory: executor.workingDirectory, commandTimeout: Int(executor.timeout), specialistNames: names)
+        case .specialist(let specialist, let name, let notebook, let conversation):
+            system = Prompts.specialist(specialist, name: name, notebook: notebook, conversation: conversation,
+                                        workingDirectory: executor.workingDirectory, commandTimeout: Int(executor.timeout))
+        }
         let userContent = screen.map { "\($0)\n\n\(request)" } ?? request
         return [ChatMessage(role: .system, content: system)] + history + [ChatMessage(role: .user, content: userContent)]
     }
@@ -743,7 +791,7 @@ public struct AgentLoop: Sendable {
     /// Returns how many tokens that took (nil if Ollama couldn't be reached).
     @discardableResult
     public func prime(history: [ChatMessage] = []) async -> Int? {
-        await client.prime(model: model, messages: messages(request: "…", screen: nil, history: history), tools: Self.tools, options: options)
+        await client.prime(model: model, messages: messages(request: "…", screen: nil, history: history), tools: tools, options: options)
     }
 
     /// Returns the final reply text ("" if stopped).
@@ -757,13 +805,20 @@ public struct AgentLoop: Sendable {
     ) async throws -> String {
         var messages = messages(request: request, screen: screen, history: history)
         var nudgesLeft = 2
+        var researched = false
+        // "agent: …" requests must reach a specialist; small models sometimes just say they will.
+        let mustDelegate = request.hasPrefix(Prompts.delegationPrefix)
+        var delegated = false
 
+        let tools = self.tools
         for _ in 0..<maxSteps {
+            await beforeTurn?()
+            try Task.checkCancellation()
             await emit(.turnStarted)
             var content = ""
             var calls: [ToolCall] = []
             var callStarted = false
-            for try await chunk in client.chat(model: model, messages: messages, tools: Self.tools, options: options) {
+            for try await chunk in client.chat(model: model, messages: messages, tools: tools, options: options) {
                 guard let message = chunk.message else { continue }
                 if let toolCalls = message.toolCalls { calls += toolCalls }
                 if !message.content.isEmpty {
@@ -788,11 +843,25 @@ public struct AgentLoop: Sendable {
                     messages.append(ChatMessage(role: .user, content: Self.nudge))
                     continue
                 }
+                if nudgesLeft > 0, mustDelegate, !delegated {
+                    nudgesLeft -= 1
+                    messages.append(ChatMessage(role: .user, content: Self.delegateNudge))
+                    continue
+                }
+                // …and answer research tasks from memory, inventing listings. Send them back to search.
+                if nudgesLeft > 0, !researched, case .specialist(let specialist, _, _, false) = role, specialist.researchesFirst {
+                    nudgesLeft -= 1
+                    messages.append(ChatMessage(role: .user, content: Self.researchNudge))
+                    continue
+                }
                 await emit(.finished(content))
                 return content
             }
             for call in calls {
                 let action = AgentAction(call: call)
+                if case .webSearch = action { researched = true }
+                if case .delegate = action { delegated = true }
+                if case .webFetch = action { researched = true }
                 let result: String
                 if case .invalid = action {
                     result = await executor.execute(action)
@@ -828,6 +897,16 @@ public struct AgentLoop: Sendable {
     static let nudge = """
         You described a next step but did not call a tool, so nothing happened. If the task is not finished, \
         call the tool now. If it is finished, reply with the final summary only.
+        """
+
+    static let delegateNudge = """
+        You said who will do it but didn't call the delegate tool, so nothing was handed over. Call delegate now with \
+        the best-fitting agent (jobs, mentor, schedule or german), a short title and the full task.
+        """
+
+    static let researchNudge = """
+        You answered without researching, so the answer may be invented. Call web_search now, then web_fetch the \
+        most promising results, and base every item in your report on what you found.
         """
 
     private static let pendingStepPattern = try! NSRegularExpression(

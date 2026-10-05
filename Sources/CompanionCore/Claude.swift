@@ -317,7 +317,7 @@ public struct ClaudeAgentLoop: Sendable {
         let searches: Double
         switch role {
         case .assistant:
-            excluded = AgentTools.specialistOnly
+            excluded = AgentTools.specialistOnly.union(AgentTools.localOnly) // Claude's web tools are server-side
             searches = 3
         case .specialist(let specialist, _, _, let conversation):
             excluded = AgentTools.names.subtracting(specialist.tools)

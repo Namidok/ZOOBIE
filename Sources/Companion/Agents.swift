@@ -7,6 +7,9 @@ private let log = Logger(subsystem: "local.companion.agent", category: "agents")
 /// ZOOBIE's four persistent specialists. Each works through its own queue of delegated tasks (one at a
 /// time; the four run in parallel), keeps a notebook and a conversation thread, and never touches the
 /// screen, mouse or keyboard while working in the background. Risky steps queue up for approval.
+///
+/// Tasks run on Claude when there's an API key, and fall back to the local model (with its own web
+/// search) when Claude can't answer — no credits, offline or overloaded — or when there's no key.
 @MainActor
 final class AgentManager: ObservableObject {
     struct Approval: Identifiable {
@@ -33,6 +36,12 @@ final class AgentManager: ObservableObject {
     var onNeedsApproval: () -> Void = {}
     /// Supplies the current settings (names, model, policy) when a task starts.
     var config: () -> CompanionConfig = { CompanionConfig() }
+    /// Local-model options for a model name (thinking off for speed), from the controller.
+    var localOptions: ((String) -> OllamaClient.Options)?
+    /// True while the user is talking to ZOOBIE; local background work waits so ZOOBIE stays quick.
+    var foregroundBusy: () -> Bool = { false }
+    /// Set when Claude reported no credits: skip it until a new key is saved.
+    var claudeUnavailable = false
 
     let memory = SpecialistStore()
     private let store = AgentRunStore()
@@ -99,9 +108,6 @@ final class AgentManager: ObservableObject {
     /// Queues a task for a specialist. Returns an error message instead when it can't run.
     @discardableResult
     func delegate(to id: Specialist.ID, title: String, task: String) -> String? {
-        guard APIKeyStore.read() != nil else {
-            return "The specialists need the Claude brain. Add a Claude API key in Settings first."
-        }
         let run = AgentRun(title: title, task: task, agent: id)
         runs.insert(run, at: 0)
         store.save(run)
@@ -150,7 +156,7 @@ final class AgentManager: ObservableObject {
     /// Starts the oldest queued task for this specialist if it's free.
     private func pump(_ id: Specialist.ID) {
         guard workers[id] == nil, let next = runs.last(where: { $0.agent == id && $0.status == .queued }) else { return }
-        guard let apiKey = APIKeyStore.read() else { return }
+        let apiKey = APIKeyStore.read()
         update(next.id) { $0.status = .running }
         let config = config()
         workers[id] = Task { [weak self] in
@@ -161,25 +167,39 @@ final class AgentManager: ObservableObject {
         }
     }
 
-    private func execute(_ run: AgentRun, agent id: Specialist.ID, apiKey: String, config: CompanionConfig) async {
+    private func execute(_ run: AgentRun, agent id: Specialist.ID, apiKey: String?, config: CompanionConfig) async {
         let specialist = Specialist.get(id)
         let executor = AgentExecutor(workingDirectory: config.agentWorkingDirectory, timeout: config.commandTimeout,
                                      ui: { [weak self] action in await self?.backgroundUI(action) ?? "Unavailable." },
                                      notebookURL: memory.notebookURL(id))
-        let loop = ClaudeAgentLoop(
-            client: AnthropicClient(apiKey: apiKey), model: config.claudeModel, effort: specialist.effort,
-            executor: executor, maxSteps: 30, policy: config.approvalPolicy,
-            role: .specialist(specialist, name: name(id), notebook: memory.notebook(id), conversation: false),
-            captureScreen: { nil }
-        )
+        let history = Array(memory.thread(id).suffix(6))
+        let confirm: @Sendable (AgentAction) async -> AgentDecision = { [weak self] action in
+            await self?.requestApproval(run.id, agent: id, action) ?? .stop
+        }
+        let emit: @Sendable (AgentEvent) async -> Void = { [weak self] event in await self?.handle(run.id, event) }
         do {
-            let report = try await loop.run(
-                request: run.task, screen: nil, history: Array(memory.thread(id).suffix(6)),
-                confirm: { [weak self] action in await self?.requestApproval(run.id, agent: id, action) ?? .stop },
-                emit: { [weak self] event in await self?.handle(run.id, event) }
-            )
+            var report: String?
+            if let apiKey, !claudeUnavailable {
+                let loop = ClaudeAgentLoop(
+                    client: AnthropicClient(apiKey: apiKey), model: config.claudeModel, effort: specialist.effort,
+                    executor: executor, maxSteps: 30, policy: config.approvalPolicy,
+                    role: .specialist(specialist, name: name(id), notebook: memory.notebook(id), conversation: false),
+                    captureScreen: { nil }
+                )
+                do {
+                    report = try await loop.run(request: run.task, screen: nil, history: history, confirm: confirm, emit: emit)
+                } catch let error as ClaudeError where error.suggestsLocalFallback && !Task.isCancelled {
+                    noteClaudeFailure(error)
+                    log.notice("\(id.rawValue, privacy: .public): Claude unavailable, running locally: \(error.localizedDescription, privacy: .public)")
+                    update(run.id) { $0.log("Claude unavailable (\(Self.reason(error))) — switched to the local model") }
+                }
+            }
+            if report == nil {
+                report = try await localLoop(id, executor: executor, conversation: false)
+                    .run(request: run.task, screen: nil, history: history, confirm: confirm, emit: emit)
+            }
             guard !Task.isCancelled else { return }
-            finish(run.id, agent: id, report: report)
+            finish(run.id, agent: id, report: report ?? "")
         } catch {
             guard !Task.isCancelled, !(error is CancellationError) else { return }
             log.error("\(id.rawValue, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
@@ -188,6 +208,39 @@ final class AgentManager: ObservableObject {
                 $0.error = error.localizedDescription
                 $0.finishedAt = Date()
             }
+        }
+    }
+
+    /// A specialist on the local model, for a background task or (with `conversation`) a live chat.
+    /// Background tasks wait before each step while the user is talking to ZOOBIE: they share the GPU.
+    func localLoop(_ id: Specialist.ID, executor: AgentExecutor, conversation: Bool) -> AgentLoop {
+        let config = config()
+        var loop = AgentLoop(
+            client: OllamaClient(baseURL: config.ollamaURL), model: config.chatModel,
+            options: localOptions?(config.chatModel) ?? OllamaClient.Options(numCtx: config.numCtx, temperature: 0.3, keepAlive: config.keepAlive),
+            executor: executor, maxSteps: conversation ? 8 : 20, policy: config.approvalPolicy,
+            role: .specialist(Specialist.get(id), name: name(id), notebook: memory.notebook(id), conversation: conversation)
+        )
+        if !conversation {
+            loop.beforeTurn = { [weak self] in
+                while await self?.foregroundBusy() == true, !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(400))
+                }
+            }
+        }
+        return loop
+    }
+
+    /// Remembers a no-credits answer so later tasks go straight to the local model.
+    func noteClaudeFailure(_ error: ClaudeError) {
+        if case .noCredits = error { claudeUnavailable = true }
+    }
+
+    private static func reason(_ error: ClaudeError) -> String {
+        switch error {
+        case .noCredits: return "no API credits"
+        case .network: return "offline"
+        default: return "busy"
         }
     }
 

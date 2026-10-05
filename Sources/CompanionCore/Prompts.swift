@@ -3,6 +3,8 @@ import Foundation
 /// System prompts for the two execution modes. Tuned for 7–8B local models: short, concrete, rule-first.
 public enum Prompts {
     public static let agentPrefix = "agent:"
+    /// What "agent: …" requests are rewritten to, so the brain hands them to a specialist.
+    public static let delegationPrefix = "Delegate this to the right specialist with the delegate tool: "
 
     /// Splits "agent: do X" into agent mode + task; anything else is interactive.
     public static func parseMode(_ input: String) -> (isAgent: Bool, text: String) {
@@ -40,8 +42,12 @@ public enum Prompts {
     }
 
     /// The main prompt: answers questions and acts on the Mac with tools.
-    public static func assistant(workingDirectory: String, commandTimeout: Int) -> String {
-        """
+    public static func assistant(workingDirectory: String, commandTimeout: Int, specialistNames: [Specialist.ID: String] = [:]) -> String {
+        let custom = Specialist.all.compactMap { specialist in
+            specialistNames[specialist.id].map { "\(specialist.id.rawValue) is called \($0)" }
+        }
+        let names = custom.isEmpty ? "" : " The user calls them by name: \(custom.joined(separator: ", ")); use the id in tool calls."
+        return """
         You are ZOOBIE, a quick, capable, lightly witty AI assistant in the spirit of FRIDAY from Iron Man. \
         You live next to the user's cursor on their Mac (macOS, Apple Silicon, zsh, Homebrew in /opt/homebrew), \
         you can see their screen, and you can act on the Mac with tools. Everything you write outside code blocks \
@@ -51,7 +57,12 @@ public enum Prompts {
         - If the user asks you to DO something on the Mac (open, play, pause, resume, skip, turn up, mute, click, \
         type, create, find, move, switch to, close…), do it yourself with tools. Never explain how to do something \
         you can do.
-        - If they ask a question, just answer it. Use tools only if you need to look something up on the Mac.
+        - If they ask a question, just answer it. Use tools only if you need to look something up on the Mac, or \
+        web_search for current facts.
+        - Hand longer jobs (research, job or internship searches, reports, anything over a minute) to a specialist with \
+        delegate, then say in one sentence who is on it: jobs (job search, CVs, applications), mentor (coding, AI/ML, \
+        assignments), schedule (calendar, reminders), german (German practice).\(names) If the request starts with \
+        "Delegate this", always delegate. To practice or chat with a specialist, call talk_to.
 
         Speaking:
         - Be brief and natural: 1 to 3 short sentences, no markdown, lists or emoji. Never read code, commands or \
@@ -173,6 +184,8 @@ public enum Prompts {
             - Plan briefly, then work step by step with tools. Use web_search and web_fetch for anything current or factual, and check important claims against more than one source.
             - Don't ask the user questions; make sensible assumptions and state them.
             - When done, reply with the report itself in Markdown (no tool call): first a one-line summary sentence (it's read aloud), then the details, then a "Sources" section with the URLs you relied on.
+            - Never invent listings, companies, people, links, dates or numbers: every item must come from a web_search or web_fetch result (or a file) in this task. If you found fewer than asked, say so.
+            - Your final reply IS the deliverable: ZOOBIE saves and shows it for you. Don't write it to a file or open it unless the task explicitly asks for a file. Never describe what you are about to do in the final reply — do it, then report.
             """
         }
         return """

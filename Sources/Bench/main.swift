@@ -5,6 +5,7 @@ import Foundation
 // Actions are never executed: the run stops at the first tool call and records it.
 //   swift run -c release Bench [--screen always|asked] [--budget chars] [model …]
 //   swift run -c release Bench --dump    prints the exact system prompt and tools as JSON
+//   swift run -c release Bench --agent jobs "task" [model]    one specialist task on the local model, live web
 
 struct Scenario {
     var request: String
@@ -31,6 +32,8 @@ let scenarios = [
     Scenario(request: "go to github.com in safari", expect: ["open_url", "run_applescript"]),
     Scenario(request: "make a file called notes.txt on my desktop that says buy milk", expect: ["write_file", "run_shell"]),
     Scenario(request: "how do I reverse a list in python?", expect: [], mentions: ["reverse", "[::-1]"]),
+    Scenario(request: "ask Scrapeman to find software internships in Berlin", expect: ["delegate"]),
+    Scenario(request: "Delegate this to the right specialist with the delegate tool: research the best 4K monitors under 500 euros", expect: ["delegate"]),
 ]
 
 /// A realistic Xcode window: about 5,000 characters of OCR text, like a full screen of code. Each
@@ -97,6 +100,8 @@ func toolName(_ action: AgentAction) -> String {
     case .writeFile: "write_file"
     case .listDirectory: "list_directory"
     case .openURL: "open_url"
+    case .delegate: "delegate"
+    case .webSearch: "web_search"
     default: "other"
     }
 }
@@ -124,6 +129,25 @@ if args.first == "--dump" {
     exit(0)
 }
 let client = OllamaClient(baseURL: URL(string: "http://127.0.0.1:11434")!)
+if args.first == "--agent", args.count >= 3, let id = Specialist.ID(rawValue: args[1]) {
+    // Runs one specialist task on the local model with live web tools. Risky steps are skipped, never run.
+    let model = args.count > 3 ? args[3] : "qwen2.5-coder:7b"
+    let loop = AgentLoop(client: client, model: model, options: .init(numCtx: 8192, temperature: 0.3, keepAlive: "-1m"),
+                         executor: AgentExecutor(workingDirectory: NSTemporaryDirectory(), timeout: 20), maxSteps: 12,
+                         role: .specialist(Specialist.get(id), name: Specialist.get(id).defaultName, notebook: "", conversation: false))
+    let start = Date()
+    let report = try await loop.run(request: args[2], screen: nil, confirm: { action in
+        print(String(format: "%6.1fs  skipped (needs approval): %@", Date().timeIntervalSince(start), action.title)); return .skip
+    }, emit: { event in
+        switch event {
+        case .running(let action): print(String(format: "%6.1fs  ▸ %@: %@", Date().timeIntervalSince(start), action.title, String(action.detail.prefix(90))))
+        case .output(_, let output): print("          ↳ \(output.split(separator: "\n").prefix(2).joined(separator: " | ").prefix(150))")
+        default: break
+        }
+    })
+    print(String(format: "\n%.1fs total. Report:\n", Date().timeIntervalSince(start)) + report)
+    exit(0)
+}
 let installed = try await client.listModels()
 let models = args.isEmpty ? ["qwen2.5-coder:7b"] : args
 
@@ -131,7 +155,8 @@ for model in models {
     let thinks = installed.first { $0.name == model }?.supportsThinking == true
     let options = OllamaClient.Options(numCtx: 8192, temperature: 0.2, keepAlive: "-1m", think: thinks ? false : nil)
     let loop = AgentLoop(client: client, model: model, options: options,
-                         executor: AgentExecutor(workingDirectory: "~", timeout: 5), maxSteps: 3, policy: .always)
+                         executor: AgentExecutor(workingDirectory: "~", timeout: 5), maxSteps: 3, policy: .always,
+                         role: .assistant(specialistNames: [.jobs: "Scrapeman", .mentor: "KMan", .schedule: "Zoobs", .german: "Adolf"]))
     let primeStart = Date()
     let primed = await loop.prime() ?? 0 // loads the model too, with the same context size as the requests
     print("\n\(model) (screen: \(screenMode), \(budget) chars) — loaded and read the \(primed)-token prompt in \(seconds(Date().timeIntervalSince(primeStart)))")

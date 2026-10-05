@@ -15,6 +15,8 @@ public struct Specialist: Sendable, Hashable, Identifiable {
     /// Client tools this specialist may use (web search/fetch are added for all of them).
     public let tools: Set<String>
     public let effort: String
+    /// Its work is about current facts (listings, prices): it must search before answering.
+    public var researchesFirst = false
     /// SF Symbol used until the user supplies an avatar.
     public let symbol: String
 
@@ -24,7 +26,7 @@ public struct Specialist: Sendable, Hashable, Identifiable {
             role: "Finds job and internship listings, tracks applications, and writes tailored CVs and cover letters.",
             persona: "Methodical and career-focused. You produce structured Markdown: tables for listings and trackers, clear next steps, deadlines first.",
             tools: ["read_file", "write_file", "list_directory", "run_shell", "open_url", "update_notebook"],
-            effort: "medium", symbol: "briefcase.fill"
+            effort: "medium", researchesFirst: true, symbol: "briefcase.fill"
         ),
         Specialist(
             id: .mentor, defaultName: "Dev Mentor",

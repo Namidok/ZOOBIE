@@ -86,6 +86,11 @@ final class CompanionController: ObservableObject {
         agents.onFinished = { [weak self] run in self?.announce(run) }
         agents.config = { [weak self] in self?.config ?? CompanionConfig() }
         agents.timerHandler = { [weak self] action in self?.handleTimer(action) ?? "Timers are unavailable." }
+        agents.localOptions = { [weak self] model in self?.options(for: model) ?? OllamaClient.Options() }
+        agents.foregroundBusy = { [weak self] in
+            guard let self else { return false }
+            return isBusy || narrator.isActive || speechIn.isRunning
+        }
         timers.onFire = { [weak self] timer in self?.timerFired(timer) }
         // A specialist is blocked on an approval: bring up its conversation without taking the keyboard.
         agents.onNeedsApproval = { [weak self] in
@@ -241,7 +246,7 @@ final class CompanionController: ObservableObject {
         return models.contains { $0.name == name || $0.name == full }
     }
 
-    private func options(for model: String) -> OllamaClient.Options {
+    func options(for model: String) -> OllamaClient.Options {
         let thinks = models.first { $0.name == model }?.supportsThinking == true
         // Thinking adds seconds of latency on an 8B model; keep replies snappy.
         return OllamaClient.Options(numCtx: config.numCtx, temperature: 0.2, keepAlive: config.keepAlive, think: thinks ? false : nil)
@@ -404,7 +409,7 @@ final class CompanionController: ObservableObject {
         let (isAgentRequest, stripped) = Prompts.parseMode(raw)
         guard !stripped.isEmpty else { return }
         // "agent: …" always goes to the right specialist.
-        let text = isAgentRequest ? "Delegate this to the right specialist with the delegate tool: \(stripped)" : stripped
+        let text = isAgentRequest ? Prompts.delegationPrefix + stripped : stripped
         if let focused, Self.leaveFocusPattern.firstMatch(in: stripped, range: NSRange(stripped.startIndex..., in: stripped)) != nil {
             self.focused = nil
             say("Back with ZOOBIE. \(agents.name(focused)) will remember where you left off.")
@@ -425,7 +430,9 @@ final class CompanionController: ObservableObject {
         workTask = Task { [weak self] in
             let snapshot = await snapshotTask?.value
             guard let self, !Task.isCancelled else { return }
-            if let focused, let apiKey = APIKeyStore.read() {
+            if let focused {
+                // Specialists use Claude while it has credits, else the local model.
+                let apiKey = claudeOutOfCredits || agents.claudeUnavailable ? nil : APIKeyStore.read()
                 await runSpecialist(focused, request: stripped, snapshot: snapshot, speak: speak, apiKey: apiKey)
             } else if claudeAnswers, let apiKey = APIKeyStore.read() {
                 await runClaude(request: text, snapshot: snapshot, speak: speak, apiKey: apiKey)
@@ -454,6 +461,7 @@ final class CompanionController: ObservableObject {
 
     func setAPIKey(_ key: String?) {
         claudeOutOfCredits = false
+        agents.claudeUnavailable = false
         if let key, !key.isEmpty {
             APIKeyStore.save(key)
             update { $0.brain = "claude" }
@@ -494,6 +502,7 @@ final class CompanionController: ObservableObject {
             stopNarration()
             if case .noCredits = error {
                 claudeOutOfCredits = true
+                agents.claudeUnavailable = true
                 showNotice(error.localizedDescription) // stays up long enough to read, unlike a flash
             } else {
                 flash("Claude isn't reachable — using the local model.")
@@ -509,27 +518,43 @@ final class CompanionController: ObservableObject {
         pendingAction = nil
     }
 
-    /// A live conversation with one specialist: its persona, tools, notebook and thread.
-    private func runSpecialist(_ id: Specialist.ID, request: String, snapshot: Snapshot?, speak: Bool, apiKey: String) async {
+    /// A live conversation with one specialist: its persona, tools, notebook and thread. On Claude when
+    /// there's a key with credits, otherwise (or when Claude fails) on the local model.
+    private func runSpecialist(_ id: Specialist.ID, request: String, snapshot: Snapshot?, speak: Bool, apiKey: String?) async {
         let specialist = Specialist.get(id)
         let executor = AgentExecutor(workingDirectory: config.agentWorkingDirectory, timeout: config.commandTimeout,
                                      ui: { [weak self] action in await self?.performUI(action) ?? "ZOOBIE is shutting down." },
                                      notebookURL: agents.memory.notebookURL(id))
-        let loop = ClaudeAgentLoop(
-            client: AnthropicClient(apiKey: apiKey), model: config.claudeModel, effort: "low",
-            executor: executor, maxSteps: 8, policy: config.approvalPolicy,
-            role: .specialist(specialist, name: agents.name(id), notebook: agents.memory.notebook(id), conversation: true),
-            captureScreen: { [weak self] in await self?.freshCapture() }
-        )
+        let history = agents.conversationHistory(id)
+        let confirm: @Sendable (AgentAction) async -> AgentDecision = { [weak self] action in await self?.confirm(action) ?? .stop }
+        let emit: @Sendable (AgentEvent) async -> Void = { [weak self] event in await self?.handle(event) }
         activeModel = agents.name(id)
         beginNarration(voiced: speak, snapshot: snapshot)
         do {
-            let answer = try await loop.run(
-                request: request, screen: snapshot?.capture, history: agents.conversationHistory(id),
-                confirm: { [weak self] action in await self?.confirm(action) ?? .stop },
-                emit: { [weak self] event in await self?.handle(event) }
-            )
-            if !answer.isEmpty {
+            var answer: String?
+            if let apiKey {
+                let loop = ClaudeAgentLoop(
+                    client: AnthropicClient(apiKey: apiKey), model: config.claudeModel, effort: "low",
+                    executor: executor, maxSteps: 8, policy: config.approvalPolicy,
+                    role: .specialist(specialist, name: agents.name(id), notebook: agents.memory.notebook(id), conversation: true),
+                    captureScreen: { [weak self] in await self?.freshCapture() }
+                )
+                do {
+                    answer = try await loop.run(request: request, screen: snapshot?.capture, history: history, confirm: confirm, emit: emit)
+                } catch let error as ClaudeError where error.suggestsLocalFallback && !Task.isCancelled {
+                    log.notice("specialist \(id.rawValue, privacy: .public) on the local model: \(error.localizedDescription, privacy: .public)")
+                    if case .noCredits = error { claudeOutOfCredits = true }
+                    agents.noteClaudeFailure(error)
+                    beginNarration(voiced: speak, snapshot: snapshot) // drop anything Claude half-said
+                }
+            }
+            if answer == nil {
+                await primeTask?.value
+                try Task.checkCancellation()
+                answer = try await agents.localLoop(id, executor: executor, conversation: true)
+                    .run(request: request, screen: nil, history: history, confirm: confirm, emit: emit)
+            }
+            if let answer, !answer.isEmpty {
                 agents.recordConversation(id, question: request, answer: ReplyParsing.extractPoints(from: answer).clean)
                 completedRequests += 1
             }
@@ -641,8 +666,12 @@ final class CompanionController: ObservableObject {
         let executor = AgentExecutor(workingDirectory: config.agentWorkingDirectory, timeout: config.commandTimeout) { [weak self] action in
             await self?.performUI(action) ?? "ZOOBIE is shutting down."
         }
+        let names = Dictionary(uniqueKeysWithValues: Specialist.ID.allCases.compactMap { id in
+            config.agentNames[id.rawValue].map { (id, $0) }
+        })
         return AgentLoop(client: client, model: config.chatModel, options: options(for: config.chatModel),
-                         executor: executor, maxSteps: config.agentMaxSteps, policy: config.approvalPolicy)
+                         executor: executor, maxSteps: config.agentMaxSteps, policy: config.approvalPolicy,
+                         role: .assistant(specialistNames: names))
     }
 
     private func remember(question: String, answer: String) {

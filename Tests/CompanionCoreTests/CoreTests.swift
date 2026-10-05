@@ -295,7 +295,7 @@ import Testing
 
     @Test func claudeToolsUseAnthropicShape() {
         let tools = ClaudeAgentLoop.tools(for: .assistant)
-        #expect(tools.count == AgentTools.names.count - AgentTools.specialistOnly.count + 2) // + web_search, web_fetch
+        #expect(tools.count == AgentTools.names.count - AgentTools.specialistOnly.count - AgentTools.localOnly.count + 2) // + Claude's two server web tools // + web_search, web_fetch
         guard case .object(let first)? = tools.first else { Issue.record("no tools"); return }
         #expect(first["input_schema"] != nil)
         #expect(first["eager_input_streaming"] == .bool(true))
@@ -607,5 +607,67 @@ final class MockAnthropicProtocol: URLProtocol, @unchecked Sendable {
         guard case .array(let messages)? = body["messages"], case .object(let user)? = messages.first,
               case .array(let blocks)? = user["content"] else { Issue.record("no messages"); return }
         #expect(blocks.contains { if case .object(let b) = $0 { return b["type"] == .string("image") } else { return false } })
+    }
+}
+
+@Suite struct LocalAgentTests {
+    @Test func parsesDuckDuckGoResults() {
+        let html = """
+        <div class="result"><h2 class="result__title"><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fjobs%3Fq%3Dintern&amp;rut=abc">Software <b>Intern</b> Jobs &amp; More</a></h2>
+        <a class="result__snippet" href="//duckduckgo.com/l/?uddg=x">Apply now for <b>internships</b> in Berlin&#39;s tech scene.</a></div>
+        <div class="result"><a class="result__a" href="https://duckduckgo.com/y.js?ad_provider=x">Sponsored</a></div>
+        <div class="result"><a rel="nofollow" class="result__a" href="https://second.example.org/">Second</a></div>
+        """
+        let results = WebTools.parseResults(html)
+        #expect(results.count == 2) // the ad is skipped
+        #expect(results[0] == WebTools.SearchResult(title: "Software Intern Jobs & More", url: "https://example.com/jobs?q=intern",
+                                                    snippet: "Apply now for internships in Berlin's tech scene."))
+        #expect(results[1].url == "https://second.example.org/")
+        #expect(results[1].snippet.isEmpty)
+    }
+
+    @Test func turnsPagesIntoReadableText() {
+        let html = """
+        <html><head><title>Careers &ndash; Acme</title><style>.x{color:red}</style></head>
+        <body><script>track()</script><h1>Open roles</h1><ul><li>ML Intern</li><li>iOS Intern</li></ul><p>Apply&nbsp;by Oct&#160;20.</p></body></html>
+        """
+        let text = WebTools.pageText(html)
+        #expect(text.hasPrefix("# Careers – Acme"))
+        #expect(text.contains("Open roles"))
+        #expect(text.contains("• ML Intern"))
+        #expect(text.contains("Apply by Oct 20."))
+        #expect(!text.contains("track()") && !text.contains("color:red"))
+    }
+
+    @Test func parsesWebToolCalls() {
+        #expect(AgentAction(call: ToolCall(name: "web_search", arguments: ["query": .string("berlin internships")])) == .webSearch("berlin internships"))
+        #expect(AgentAction(call: ToolCall(name: "web_fetch", arguments: ["url": .string("https://example.com")])) == .webFetch("https://example.com"))
+        #expect(!AgentAction.webSearch("x").isRisky)
+        #expect(ToolCallParser.fallbackCalls(in: #"Searching. {"name": "web_search", "arguments": {"query": "x"}}"#).first?.function.name == "web_search")
+    }
+
+    @Test func claudeKeepsItsServerWebToolsAndLocalSpecialistsGetTheirs() {
+        func names(_ tools: [JSONValue]) -> [String] {
+            tools.compactMap { tool -> String? in
+                guard case .object(let object) = tool else { return nil }
+                if case .object(let function)? = object["function"] { return function["name"]?.stringValue }
+                return object["name"]?.stringValue
+            }
+        }
+        // Claude: one web_search (its server tool), never the local client version as well.
+        let claude = names(ClaudeAgentLoop.tools(for: .assistant))
+        #expect(claude.filter { $0 == "web_search" }.count == 1)
+        // Local ZOOBIE can delegate and search; a local specialist gets its tools plus web search, nothing else.
+        #expect(names(AgentLoop.tools).contains("delegate") && names(AgentLoop.tools).contains("web_search"))
+        let executor = AgentExecutor(workingDirectory: "/tmp", timeout: 5)
+        let jobs = AgentLoop(client: OllamaClient(baseURL: URL(string: "http://127.0.0.1:1")!), model: "m", options: .init(),
+                             executor: executor, maxSteps: 1, role: .specialist(Specialist.get(.jobs), name: "Scrapeman", notebook: "", conversation: false))
+        #expect(Set(names(jobs.tools)) == Specialist.get(.jobs).tools.union(["web_search", "web_fetch"]))
+    }
+
+    @Test func localPromptKnowsTheSpecialistsNames() {
+        let prompt = Prompts.assistant(workingDirectory: "~", commandTimeout: 60, specialistNames: [.jobs: "Scrapeman"])
+        #expect(prompt.contains("jobs is called Scrapeman"))
+        #expect(prompt.contains("delegate"))
     }
 }
