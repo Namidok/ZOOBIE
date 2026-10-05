@@ -4,31 +4,30 @@ A private, local-first desktop companion for macOS in the spirit of FRIDAY. It l
 
 ## Use
 
-ZOOBIE lives in your MacBook's **notch** (a matching pill at the top of the screen on Macs without one) and next to your cursor. Ask it anything, or tell it to do something — it answers questions and **performs actions itself**.
+ZOOBIE lives next to your cursor (a small pixel arrow) and in a **chat window that drops down from the notch**: ZOOBIE and its four specialists (Scrapeman, KMan, Zoobs, Adolf — avatars in `img/`) in a sidebar, the conversation beside it. Hover the notch to open it; it also drops down by itself while ZOOBIE works on a request. Ask it anything, or tell it to do something — it answers questions and **performs actions itself**.
 
 | Input | What happens |
 |---|---|
-| **Hold ⌃⌥**, speak, release | The notch shows a waveform while it listens, then a spinner, then live captions as it answers out loud. When it mentions something on screen, the cursor pointer flies there and outlines it. Requests like "resume Spotify" or "open a new Safari tab" just get done. |
-| **⌃⌥Space** | A one-line input drops out of the notch for typing. |
-| **Hover the notch** | It expands into **Assistant** (type, read the latest answer, copy code), **Agents** and **Settings**. |
-| **Esc** | Stops talking / the current task, or closes the notch. |
+| **Hold ⌃⌥**, speak, release | A waveform appears by the pointer while it listens, then a spinner, then the reply in a bubble next to your cursor as it answers out loud. Requests like "resume Spotify" or "open a new Safari tab" just get done. |
+| **⌃⌥Space** or **click the menu bar icon** | Opens the chat window, ready to type (press again to close). The red mic button there works like holding ⌃⌥. |
+| **Esc** | Stops an approval, then talking or the current task, then closes the window. |
 
-**Agents** — hand off longer jobs ("start an agent to research the best 4K monitors under $500", or type it in the Agents tab). Each agent works in the background with web search, files, shell and AppleScript — never your screen, mouse or keyboard — while you keep working. The notch shows how many are running; risky steps ask for approval in the notch; when one finishes ZOOBIE tells you, and the report is saved to `~/Documents/ZOOBIE/`. Up to four run at once. Agents need the Claude brain.
+**Agents** — hand off longer jobs ("agent: research the best 4K monitors under $500", or open a specialist in the sidebar and give it a task). Each works in the background with web search, files, shell and AppleScript — never your screen, mouse or keyboard — while you keep working. Its conversation shows the progress and the result; risky steps ask for approval there (the window comes up by itself); when one finishes ZOOBIE tells you, and the report is saved to `~/Documents/ZOOBIE/`. Agents need the Claude brain.
 
 **Approvals** (Settings › *Ask before acting*): harmless actions just happen — opening apps, play/pause, clicking, typing, read-only commands like `ls` or `git status`. Anything that deletes, overwrites, installs, sends, quits or changes the system asks first; destructive ones are flagged **CAUTION**.
 
-Code and commands are never read aloud — they appear under the notch with a copy button. The first launch walks you through setup (permissions, voice, brain) in a short onboarding window.
+Code and commands are never read aloud — they appear in the chat window with a copy button (it opens by itself when a spoken answer includes code). The first launch walks you through setup (permissions, voice, brain) in a short onboarding window.
 
 ## Brain
 
-ZOOBIE has two brains (notch › Settings › **Brain**):
+ZOOBIE has two brains (chat window › gear › **Brain**):
 
 - **Claude** (default, recommended) — the model behind products like Clicky. It sees a screenshot of your screen, points at any button or icon with pixel accuracy, and acts reliably. Needs a key from [console.anthropic.com](https://console.anthropic.com): add it during onboarding or in Settings (stored in your Keychain). Uses Claude Opus 5.5 at low effort for quick voice replies; switch to Sonnet 5.5 or Haiku 4.5 in Settings for lower cost. Agents run at medium effort. Screenshots and questions are sent to Anthropic.
 - **Local only** — Ollama on your Mac; nothing leaves the machine. Less capable (reads the screen as OCR text, can only click things with visible text). Also the automatic fallback when Claude is unreachable.
 
 ## Voice
 
-ZOOBIE speaks with **Kokoro**, a neural voice that runs entirely on your Mac (default: *Emma*, British). Pick another in Settings › **Voice** — each choice plays a preview. If the neural voice isn't installed or running, it falls back to Apple's *Moira* (Irish).
+ZOOBIE speaks with **Kokoro**, a neural voice that runs entirely on your Mac (default: *Heart*, a warm American female voice). Pick another in Settings › **Voice** — each choice plays a preview. If the neural voice isn't installed or running, it falls back to Apple's *Moira* (Irish).
 
 ```bash
 scripts/setup-voice.sh    # one-time: Python venv + ~350 MB model in ~/Library/Application Support/Companion/voice
@@ -44,7 +43,7 @@ ollama pull qwen2.5vl:3b              # optional: lets it understand images/diag
 scripts/build-app.sh --install --open # builds build/ZOOBIE.app, copies to /Applications, launches
 ```
 
-On first launch an onboarding window walks through these (Settings in the notch shows their status later):
+On first launch an onboarding window walks through these (Settings in the chat window shows their status later):
 
 | Permission | Used for |
 |---|---|
@@ -59,21 +58,31 @@ If on-device speech isn't available, enable Dictation once in System Settings �
 
 ## Configure
 
-Most settings are in the notch's **Settings** tab (also opened by clicking the menu bar icon). Everything lives in `~/Library/Application Support/Companion/config.json`:
+Most settings are behind the gear in the chat window. Everything lives in `~/Library/Application Support/Companion/config.json`:
 
 | Key | Default | |
 |---|---|---|
 | `brain` | `claude` | `claude` or `local` |
 | `claudeModel` / `claudeEffort` | `claude-opus-5-5` / `low` | Claude model and effort (`low`…`max`) |
 | `chatModel` | `qwen2.5-coder:7b` | the local model (must support tools); also the offline fallback |
-| `voice` / `speechSpeed` | `bf_emma` / `1.05` | a Kokoro voice id, or `system:Moira` for an Apple voice |
+| `voice` / `speechSpeed` | `af_heart` / `1.05` | a Kokoro voice id, or `system:Moira` for an Apple voice |
 | `approvalPolicy` | `risky` | `risky`, `always` or `never` |
 | `visionModel` | auto | first installed model with the vision capability |
 | `visionMode` | `auto` | `auto` = use the vision model only when OCR finds little text or the question is visual; `always`; `never` |
 | `speakReplies` / `speakTypedReplies` | `true` / `false` | speak answers to voice / typed questions (captions show either way) |
 | `agentWorkingDirectory` | `~` | where agent commands run |
 | `agentMaxSteps` / `commandTimeout` | `12` / `60` | per-task step cap, per-command seconds |
-| `numCtx` / `keepAlive` | `8192` / `30m` | context window; how long Ollama keeps the model loaded |
+| `numCtx` / `keepAlive` | `8192` / `-1m` | context window; how long Ollama keeps the model loaded (`-1m` = always, so replies stay fast; `30m` frees ~5 GB when idle) |
+
+## Speed (local brain)
+
+On Apple Silicon a 7B model *reads* only ~170 tokens a second, so what ZOOBIE sends matters more than the model:
+
+- **Pre-reading.** On launch and the moment you press ⌃⌥ (while you're still talking), the model reads its instructions and recent history in advance; your request then only adds the new question (~0.2 s instead of ~15 s).
+- **Screen only when asked.** Screen text goes to the local model only when the request is about it ("this error", "what's on my screen"); a screenful costs it 5–15 s to read.
+- **Talks first.** "On it." plays while the model is still writing the action, and long answers start on their first clause.
+
+Measure it with `swift run -c release Bench [model …]` (14 everyday requests, nothing is executed), and see live timings with `log show --last 10m --predicate 'subsystem == "local.companion.agent"' | grep latency`. On an M4 with qwen2.5-coder:7b, ZOOBIE starts talking ~0.8–1.4 s after you ask and acts within ~1.5–3.5 s; questions about the screen take ~10–15 s.
 
 ## Privacy
 
@@ -99,7 +108,7 @@ Sources/CompanionCore/   Foundation-only, unit-tested
 Sources/Companion/       the app
   main.swift               app delegate, status item, hotkey wiring
   CompanionController.swift orchestration
-  Notch.swift              the notch island: live activity, captions, cards, Assistant/Agents/Settings tabs
+  ChatWindow.swift         the chat window: sidebar (ZOOBIE + specialists), conversations, approvals, composer, settings
   Agents.swift             background agent manager (concurrent Claude workers, approvals, reports)
   Onboarding.swift         first-run setup window
   MenuBarPanel.swift       the Settings view
@@ -110,8 +119,8 @@ Sources/Companion/       the app
   Voice.swift              Kokoro voice server + sentence-synced narrator (Apple voice fallback)
   MacControl.swift         media keys, clicks, shortcuts, typing
   Buddy.swift              cursor pointer: follows the cursor, flies to and points at things
-  Overlay.swift            on-screen highlights + the card views shown in the notch (input, code, approvals)
-  Panel.swift              history panel
+  Overlay.swift            on-screen highlights
+  Panel.swift              message building blocks: step cards, Markdown, copyable code
 ```
 
 Diagnostics — every request, action and result is logged locally:

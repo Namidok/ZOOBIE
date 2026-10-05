@@ -10,7 +10,7 @@ final class BuddyModel: ObservableObject {
     @Published var caption: String?
     @Published var captionStyle: CaptionStyle = .spoken
     @Published var isPointing = false
-    /// Off when the notch shows captions instead of the bubble next to the pointer.
+    /// Off when the user turned the reply bubble next to the pointer off in Settings.
     @Published var showsCaptions = true
     @Published var levels: [CGFloat] = Array(repeating: 0, count: 7)
     /// Captions flip left/up near the right/bottom screen edges so they stay visible.
@@ -203,11 +203,13 @@ private struct CaptionBubble: View {
             .padding(.horizontal, 11)
             .padding(.vertical, 7)
             .background(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(DS.Colors.surface1.opacity(0.92))
-                    .shadow(color: .black.opacity(0.35), radius: 8, y: 3)
+                PixelRect(step: DS.Radius.medium)
+                    .fill(DS.Colors.surface1.opacity(0.94))
+                    .shadow(color: style == .spoken ? DS.glow.opacity(0.25) : .black.opacity(0.4), radius: 10, y: 3)
             )
-            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(DS.Colors.borderSubtle))
+            // ZOOBIE's own words get a faint crimson edge; the user's question and status lines stay neutral.
+            .overlay(PixelRect(step: DS.Radius.medium)
+                .strokeBorder(style == .spoken ? DS.Colors.accent.opacity(0.45) : DS.Colors.borderSubtle))
     }
 }
 
@@ -217,7 +219,7 @@ private struct Waveform: View {
     var body: some View {
         HStack(spacing: 2.5) {
             ForEach(levels.indices, id: \.self) { i in
-                Capsule()
+                Rectangle() // pixel bars
                     .fill(BuddyStyle.gradient)
                     .frame(width: 3, height: 4 + levels[i] * 16)
             }
@@ -225,7 +227,8 @@ private struct Waveform: View {
         .frame(height: 20)
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
-        .background(Capsule().fill(DS.Colors.surface1.opacity(0.9)))
+        .background(PixelRect(step: DS.Radius.small).fill(DS.Colors.surface1.opacity(0.92)))
+        .overlay(PixelRect(step: DS.Radius.small).strokeBorder(DS.Colors.borderSubtle, lineWidth: 2))
         .animation(.easeOut(duration: 0.08), value: levels)
     }
 }
@@ -251,7 +254,8 @@ private struct BuddyGlyph: View {
             }
             PointerShape()
                 .fill(BuddyStyle.gradient)
-                .frame(width: 15, height: 19)
+                .frame(width: 12, height: 19)
+                .shadow(color: DS.Colors.onAccent, radius: 0, x: 1, y: 1) // a dark sprite edge
                 .shadow(color: BuddyStyle.glow.opacity(active ? 0.95 : 0.4), radius: active ? 8 : 3)
                 .scaleEffect(breathe ? 1.14 : 1, anchor: .topLeading)
                 .opacity(active ? 1 : 0.65)
@@ -265,3 +269,66 @@ private struct BuddyGlyph: View {
         }
     }
 }
+
+// MARK: - Design previews
+
+#if DEBUG
+/// Draws the pointer, waveform, caption bubbles and core controls to PNGs without opening a window,
+/// to check the look without launching the app: `.build/debug/Companion --render-previews <dir>`.
+enum DesignPreviews {
+    @MainActor
+    static func render(to directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let states: [(String, (BuddyModel) -> Void)] = [
+            ("buddy-idle", { _ in }),
+            ("buddy-listening", { $0.mode = .listening; $0.levels = [0.2, 0.6, 0.9, 0.5, 0.8, 0.3, 0.6] }),
+            ("buddy-thinking", { $0.mode = .thinking; $0.caption = "why won't this build?"; $0.captionStyle = .user }),
+            ("buddy-speaking", { $0.mode = .speaking; $0.caption = "Line twelve says impot instead of import, so the compiler can't find Foundation." }),
+            ("buddy-status", { $0.mode = .thinking; $0.caption = "▸ Open Safari"; $0.captionStyle = .status }),
+        ]
+        for (name, configure) in states {
+            let model = BuddyModel()
+            configure(model)
+            try save(BuddyView(model: model).background(Color(hex: 0x1E1F24)), name: name, in: directory) // a dark editor behind it
+        }
+        try save(controls.padding(24).background(DS.Colors.background), name: "controls", in: directory)
+    }
+
+    @MainActor
+    private static var controls: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                ZoobieMark(size: 26)
+                Text("ZOOBIE").font(.system(size: 18, weight: .bold)).foregroundStyle(DS.Colors.textPrimary)
+            }
+            DSSectionLabel(text: "Voice")
+            HStack(spacing: 8) {
+                Button("Allow") {}.buttonStyle(DSButtonStyle(kind: .primary))
+                Button("Skip") {}.buttonStyle(DSButtonStyle(kind: .secondary))
+                Button("Not now") {}.buttonStyle(DSButtonStyle(kind: .ghost))
+                Button("Delete") {}.buttonStyle(DSButtonStyle(kind: .destructive))
+            }
+            DSSegmented(options: [(0, "Local"), (1, "Claude")], selection: .constant(0)).frame(width: 220)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Resuming your music.").font(.system(size: 13, weight: .medium)).foregroundStyle(DS.Colors.textPrimary)
+                Text("qwen2.5-coder:7b · local").font(.system(size: 11)).foregroundStyle(DS.Colors.textSecondary)
+                Text("Hold ⌃⌥ to talk").font(.system(size: 10)).foregroundStyle(DS.Colors.textTertiary)
+            }
+            .padding(12).frame(width: 300, alignment: .leading).dsSurface()
+            HStack(spacing: 10) {
+                Label("CAUTION", systemImage: "exclamationmark.triangle.fill").font(.system(size: 10, weight: .bold)).foregroundStyle(DS.Colors.danger)
+                Label("Done", systemImage: "checkmark.circle.fill").font(.system(size: 10, weight: .bold)).foregroundStyle(DS.Colors.success)
+            }
+        }
+    }
+
+    @MainActor
+    private static func save(_ view: some View, name: String, in directory: URL) throws {
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 2
+        guard let image = renderer.nsImage, let tiff = image.tiffRepresentation,
+              let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return }
+        try png.write(to: directory.appendingPathComponent("\(name).png"))
+    }
+}
+#endif

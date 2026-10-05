@@ -28,7 +28,7 @@
 | S9 | Settings tab → Permissions | All four green | ✅ |
 | S10 | Quit ZOOBIE, run `pgrep -f kokoro_server` | Nothing (voice server stopped with the app) | ✅ |
 
-## 1. Notch UI
+## 1. Notch UI (retired 2026-10-04 — replaced by the chat window; kept for history)
 
 | ID | Do this | Expected | Today |
 |---|---|---|---|

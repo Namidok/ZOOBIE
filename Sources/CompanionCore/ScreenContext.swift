@@ -206,6 +206,11 @@ public enum ReplyParsing {
         }
 
         var pieces = proseParts.flatMap(sentencePieces)
+        if let first = pieces.first, let (head, tail) = openingClause(of: first) {
+            // The voice can start on the opening clause while the model is still writing the rest,
+            // and a short clause is synthesized in half the time of a full sentence.
+            pieces.replaceSubrange(0...0, with: [head, tail])
+        }
         if !final && endsInProse, let last = pieces.popLast() {
             // The last piece may still be growing. It is also the only place a point tag belonging
             // to the previous sentence can appear ("Click Run. [POINT:3] Then…").
@@ -232,6 +237,17 @@ public enum ReplyParsing {
             carried = []
         }
         return Narration(steps: steps, code: code.filter { !$0.code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+    }
+
+    /// Splits a sentence after its first comma when at least four words come before it ("A process is
+    /// like a separate program, with its own memory."). Stable while streaming: once the comma and the
+    /// first character after it exist, later text never moves the split.
+    private static func openingClause(of sentence: String) -> (String, String)? {
+        guard let comma = sentence.range(of: ", ") else { return nil }
+        let head = String(sentence[..<comma.lowerBound]) + ","
+        let tail = sentence[comma.upperBound...].trimmingCharacters(in: .whitespaces)
+        guard !tail.isEmpty, !head.hasPrefix("["), head.split(separator: " ").count >= 4 else { return nil }
+        return (head, tail)
     }
 
     /// Lines, then sentences within a line (a terminator followed by whitespace, so "file.txt" stays whole).
@@ -262,6 +278,19 @@ public enum ReplyParsing {
         s = s.replacingOccurrences(of: #"\[([^\]]+)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
         s = s.replacingOccurrences(of: #"(\*\*|__|\*|`)"#, with: "", options: .regularExpression)
         return s.trimmingCharacters(in: .whitespaces)
+    }
+}
+
+public enum ScreenRouting {
+    private static let screenWords = try! NSRegularExpression(
+        pattern: #"\b(screen|this|these|here|error|errors|warning|warnings|bug|crash|crashes|crashed|build|compile|fails|failing|failed|broken|wrong|selected|highlighted|page|window|tab|line|code|message|email|summari[sz]e)\b"#,
+        options: [.caseInsensitive]
+    )
+
+    /// Whether a request is about what's on screen. The local brain reads the screen only then: a
+    /// screenful of text takes it 10–20 s to read, while "next song" or "set a timer" never needs it.
+    public static func refersToScreen(_ request: String) -> Bool {
+        screenWords.firstMatch(in: request, range: NSRange(request.startIndex..., in: request)) != nil
     }
 }
 

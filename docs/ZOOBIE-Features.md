@@ -1,6 +1,6 @@
 # ZOOBIE — What's Built (v0.3, 1 Oct 2026)
 
-ZOOBIE is a FRIDAY-style AI assistant for macOS. It lives in the MacBook notch and next to your cursor, sees your screen, talks with you, points at things, does things on your Mac, and runs background agents for longer jobs. Claude is the brain; a local Ollama model is the private/offline fallback.
+ZOOBIE is a FRIDAY-style AI assistant for macOS. It lives in a chat window and next to your cursor, sees your screen, talks with you, points at things, does things on your Mac, and runs background agents for longer jobs. Claude is the brain; a local Ollama model is the private/offline fallback.
 
 Repo: **github.com/Namidok/ZOOBIE** (private) · App: `/Applications/ZOOBIE.app` · Stack: native Swift 6 / SwiftUI + AppKit, SwiftPM (no Xcode needed)
 
@@ -10,19 +10,19 @@ Repo: **github.com/Namidok/ZOOBIE** (private) · App: `/Applications/ZOOBIE.app`
 
 | Input | What happens |
 |---|---|
-| **Hold ⌃⌥ (Control + Option)**, speak, release | Push-to-talk. The notch shows a waveform, then a spinner, then live captions while ZOOBIE answers out loud. |
-| **⌃⌥Space** | A one-line text input drops out of the notch. |
-| **Hover the notch** | Expands into three tabs: **Assistant**, **Agents**, **Settings**. |
-| **Esc** | Stops talking / the current task, or closes the notch. |
-| **Click the menu-bar icon** | Opens Settings in the notch. |
+| **Hold ⌃⌥ (Control + Option)**, speak, release | Push-to-talk. The pointer shows a waveform, then a spinner, then the reply in a bubble next to the cursor while ZOOBIE answers out loud. |
+| **⌃⌥Space** / **menu-bar icon** | Opens (or closes) the chat window, ready to type. |
+| **Esc** | Stops an approval, then talking / the current task, then closes the window. |
 
 ZOOBIE decides by itself whether you asked a **question** (it answers) or asked it to **do** something (it does it). No prefix needed.
 
 ---
 
-## 2. The notch UI (Dynamic-Island style)
+## 2. The chat window (replaced the notch on 2026-10-04)
 
-Design: **dark mode simple anime** — matte black surfaces, soft charcoal borders, warm amber accents and pulses; crisp high-contrast monospaced code blocks you copy with one click.
+A pixel-art window that drops down from the notch, in the style of Hey Clicky: a sidebar with ZOOBIE and the four specialists (live status, search, new chat, your profile, settings) and the conversation beside it (bubbles, step cards, copyable code, "Working on it · 7s", approval cards, a big red mic button). Specialists' chats show their tasks as exchanges with collapsible progress messages and the report. The section below describes the retired notch UI.
+
+Design: **pixel** — the specialists' pixel-art avatars as a UI: deep navy and slate surfaces, hologram-cyan glow, dithered checker textures, notched pixel frames, an 8-bit arrow pointer and Jersey 10 pixel titles (palette sampled from `img/`, tokens in `replica/design/tokens.json`, 0 WCAG AA contrast failures); replies appear in a bubble next to the cursor, Clicky-style.
 
 - A black shape that blends into the camera notch (Macs without a notch get a matching pill at the top of the screen). Built using the same window technique as the open-source app Boring Notch: a borderless panel above the menu bar, sized from the real notch geometry.
 - **Live activity "wings"** on both sides of the camera: waveform (listening), spinner (thinking), animated bars (speaking), a running-agents counter, an approval hand when something needs your OK.
@@ -77,7 +77,7 @@ Design: **dark mode simple anime** — matte black surfaces, soft charcoal borde
 | `set_timer` · `create_reminder` · `list_events` · `create_event` | Timers, Reminders, Calendar |
 
 ### Approvals (safety)
-- **Default "Risky only":** harmless actions run immediately — opening apps, media keys, clicking, typing, look-only commands (`ls`, `git status`, `cat`…). Anything that deletes, overwrites, installs, sends, quits apps or changes the system shows an approval card in the notch: **Run / Skip / Stop**. Destructive ones get a red **CAUTION** badge.
+- **Default "Risky only":** harmless actions run immediately — opening apps, media keys, clicking, typing, look-only commands (`ls`, `git status`, `cat`…). Anything that deletes, overwrites, installs, sends, quits apps or changes the system shows an approval card in the chat window: **Run / Skip / Stop**. Destructive ones get a red **CAUTION** badge.
 - Other modes: **Always ask** / **Never ask** (Settings).
 - Commands containing made-up placeholder paths (e.g. `/path/to/your/project`) are rejected before they can run.
 - Readable explanations when macOS blocks something (e.g. "allow ZOOBIE under Privacy & Security › Automation").
@@ -93,21 +93,21 @@ Design: **dark mode simple anime** — matte black surfaces, soft charcoal borde
 
 - **Routing:** `agent: …` always goes to the right specialist; ZOOBIE also delegates long jobs on its own. Quick things (a timer, one reminder, a calendar check) ZOOBIE does instantly itself.
 - **Persistent:** each specialist keeps its own **notebook** (long-term memory it maintains: application tracker, your German level, preferences…) and **conversation thread**, stored as text in `~/Library/Application Support/Companion/agents/<id>/` — they remember you across days.
-- **Task queue:** each specialist works through its tasks one at a time; all four work in parallel. Live progress, approvals in the notch (warm amber cards), spoken summary + Markdown report in `~/Documents/ZOOBIE/` when done.
-- **Talk to a specialist:** "let's practice German" (or the Talk button) switches the conversation to that specialist; say "back to ZOOBIE" to return. Their avatar shows in the notch while you're talking.
-- **German practice:** German sentences are spoken in a German voice (Anna), English in Emma's; optional German speech input ("I'll speak German" toggle).
+- **Task queue:** each specialist works through its tasks one at a time; all four work in parallel. Live progress and approvals in the specialist's chat, spoken summary + Markdown report in `~/Documents/ZOOBIE/` when done.
+- **Talk to a specialist:** "let's practice German" (or the Talk button) switches the conversation to that specialist; say "back to ZOOBIE" to return. Their row lights up in the sidebar while you're talking.
+- **German practice:** German sentences are spoken in a German voice (Anna), English in the main voice; optional German speech input ("I'll speak German" toggle).
 - **Background safety:** specialists never touch your screen, mouse or keyboard while working in the background.
 - **Names & avatars:** set names in `config.json` → `"agentNames": {"jobs": "…", "mentor": "…", "schedule": "…", "german": "…"}`; drop images at `~/Library/Application Support/Companion/avatars/<jobs|mentor|schedule|german>.png`.
 
 ## 7b. Timers, reminders, calendar
 
-- `set_timer` / `list_timers` / `cancel_timer` — countdown shown in the notch, chime + spoken announcement when done, survives restarts.
+- `set_timer` / `list_timers` / `cancel_timer` — countdown shown in the chat window's sidebar, chime + spoken announcement when done, survives restarts.
 - `create_reminder` (Apple Reminders, with due date/time), `list_events` and `create_event` (Apple Calendar) — dates are handled structurally, so they work regardless of system language.
 
 ## 8. Voice
 
 - **Speech-to-text:** Apple on-device speech recognition (forced on-device; never sent to Apple's servers). Live partial transcript shown as you talk.
-- **Text-to-speech:** **Kokoro** neural voice running locally (default *Emma*, British female; also Isabella, Alice, Lily, Heart, Bella, George), fallback to Apple's *Moira* (Irish). Speaks sentence by sentence while the answer is still streaming (~0.3–0.5 s to first audio). Code and commands are never read aloud.
+- **Text-to-speech:** **Kokoro** neural voice running locally (default *Heart*, American female; also Emma, Isabella, Alice, Lily, Bella, George), fallback to Apple's *Moira* (Irish). Speaks sentence by sentence while the answer is still streaming (~0.3–0.5 s to first audio). Code and commands are never read aloud.
 - Options: speak answers to voice questions (on), speak answers to typed questions (off), voice preview, speech speed.
 - The local voice server shuts down with the app (no leftover background process).
 

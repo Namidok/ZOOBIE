@@ -28,6 +28,8 @@ cp "$bin" "$app/Contents/MacOS/ZOOBIE"
 [[ -f Resources/AppIcon.icns ]] && cp Resources/AppIcon.icns "$app/Contents/Resources/"
 cp Resources/Info.plist "$app/Contents/Info.plist"
 cp Resources/kokoro_server.py "$app/Contents/Resources/"
+cp -R Resources/avatars "$app/Contents/Resources/"  # the specialists' faces (cropped from img/)
+cp -R Resources/fonts "$app/Contents/Resources/"     # Jersey 10 (SIL OFL) for titles
 # A stable identity keeps macOS permissions across rebuilds (see scripts/make-signing-identity.sh);
 # without one, fall back to ad-hoc signing, which macOS treats as a new app every build.
 identity="${CODESIGN_IDENTITY:-}"

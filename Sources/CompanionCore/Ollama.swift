@@ -145,15 +145,6 @@ public final class OllamaClient: Sendable {
         return try JSONDecoder().decode(Tags.self, from: data).models
     }
 
-    /// Loads a model into memory ahead of the first question so first-token latency stays low.
-    public func warmUp(model: String, keepAlive: String) async {
-        var request = URLRequest(url: baseURL.appendingPathComponent("api/generate"))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONEncoder().encode(["model": model, "keep_alive": keepAlive])
-        _ = try? await send(request)
-    }
-
     public struct Options: Sendable {
         public var numCtx: Int
         public var temperature: Double
@@ -169,29 +160,46 @@ public final class OllamaClient: Sendable {
         }
     }
 
-    /// Streams a chat completion. Cancel the consuming task to abort generation.
-    public func chat(model: String, messages: [ChatMessage], tools: [JSONValue]? = nil, options: Options) -> AsyncThrowingStream<ChatChunk, Error> {
-        struct Body: Encodable {
-            var model: String
-            var messages: [ChatMessage]
-            var stream = true
-            var tools: [JSONValue]?
-            var options: [String: JSONValue]
-            var keep_alive: String
-            var think: Bool?
-        }
-        let body = Body(
-            model: model,
-            messages: messages,
-            tools: tools,
-            options: ["num_ctx": .number(Double(options.numCtx)), "temperature": .number(options.temperature)],
-            keep_alive: options.keepAlive,
-            think: options.think
-        )
+    private struct ChatBody: Encodable {
+        var model: String
+        var messages: [ChatMessage]
+        var stream: Bool
+        var tools: [JSONValue]?
+        var options: [String: JSONValue]
+        var keep_alive: String
+        var think: Bool?
+    }
+
+    /// The same body for chat and prime, so a primed prompt matches the real one token for token
+    /// (a different num_ctx would even reload the model).
+    private func chatRequest(model: String, messages: [ChatMessage], tools: [JSONValue]?, options: Options, stream: Bool, maxTokens: Int? = nil) -> URLRequest {
+        var settings: [String: JSONValue] = ["num_ctx": .number(Double(options.numCtx)), "temperature": .number(options.temperature)]
+        if let maxTokens { settings["num_predict"] = .number(Double(maxTokens)) }
+        let body = ChatBody(model: model, messages: messages, stream: stream, tools: tools, options: settings,
+                            keep_alive: options.keepAlive, think: options.think)
         var request = URLRequest(url: baseURL.appendingPathComponent("api/chat"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONEncoder().encode(body)
+        return request
+    }
+
+    /// Has the model read `messages` ahead of time. Ollama keeps what it last read, so a later chat
+    /// that starts with the same messages only pays for its new tail — on an M4 a 7B model reads
+    /// about 170 tokens a second, so a 3,000-token system prompt read in advance saves ~17 s.
+    /// Returns how many tokens it had to read (nil if Ollama couldn't be reached).
+    @discardableResult
+    public func prime(model: String, messages: [ChatMessage], tools: [JSONValue]?, options: Options) async -> Int? {
+        let request = chatRequest(model: model, messages: messages, tools: tools, options: options, stream: false, maxTokens: 1)
+        guard let (data, response) = try? await send(request), (response as? HTTPURLResponse)?.statusCode == 200,
+              case .object(let body)? = JSONValue.parse(String(decoding: data, as: UTF8.self)) else { return nil }
+        if case .number(let count)? = body["prompt_eval_count"] { return Int(count) }
+        return 0
+    }
+
+    /// Streams a chat completion. Cancel the consuming task to abort generation.
+    public func chat(model: String, messages: [ChatMessage], tools: [JSONValue]? = nil, options: Options) -> AsyncThrowingStream<ChatChunk, Error> {
+        let request = chatRequest(model: model, messages: messages, tools: tools, options: options, stream: true)
 
         let session = self.session
         let baseURL = self.baseURL

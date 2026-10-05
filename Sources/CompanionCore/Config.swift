@@ -73,8 +73,10 @@ public struct CompanionConfig: Codable, Sendable, Equatable {
     /// Also speak answers to typed questions.
     public var speakTypedReplies = false
     public var showBuddy = true
-    /// A Kokoro voice id (e.g. "bf_emma") for the neural voice, or "system:<Name>" for an Apple voice.
-    public var voice = "bf_emma"
+    /// Show replies in a bubble next to the cursor (like Clicky).
+    public var captionsAtCursor = true
+    /// A Kokoro voice id (e.g. "af_heart") for the neural voice, or "system:<Name>" for an Apple voice.
+    public var voice = "af_heart"
     public var speechSpeed = 1.05
     public var approvalPolicy = ApprovalPolicy.risky
     /// Your names for the four specialists, keyed by id (jobs, mentor, schedule, german).
@@ -83,12 +85,14 @@ public struct CompanionConfig: Codable, Sendable, Equatable {
     public var agentMaxSteps = 12
     public var commandTimeout: Double = 60
     public var numCtx = 8192
-    public var keepAlive = "30m"
+    /// How long Ollama keeps the model loaded after a request. "-1m" means forever: a reload costs
+    /// seconds and drops the pre-read system prompt, which costs ~15 s more on the next request.
+    public var keepAlive = "-1m"
 
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case ollamaURL, brain, claudeModel, claudeEffort, chatModel, visionModel, visionMode, speakReplies, speakTypedReplies, showBuddy, voice, speechSpeed, approvalPolicy, agentNames
+        case ollamaURL, brain, claudeModel, claudeEffort, chatModel, visionModel, visionMode, speakReplies, speakTypedReplies, showBuddy, captionsAtCursor, voice, speechSpeed, approvalPolicy, agentNames
         case agentWorkingDirectory, agentMaxSteps, commandTimeout, numCtx, keepAlive
     }
 
@@ -105,6 +109,7 @@ public struct CompanionConfig: Codable, Sendable, Equatable {
         speakReplies = try c.decodeIfPresent(Bool.self, forKey: .speakReplies) ?? d.speakReplies
         speakTypedReplies = try c.decodeIfPresent(Bool.self, forKey: .speakTypedReplies) ?? d.speakTypedReplies
         showBuddy = try c.decodeIfPresent(Bool.self, forKey: .showBuddy) ?? d.showBuddy
+        captionsAtCursor = try c.decodeIfPresent(Bool.self, forKey: .captionsAtCursor) ?? d.captionsAtCursor
         voice = try c.decodeIfPresent(String.self, forKey: .voice) ?? d.voice
         speechSpeed = try c.decodeIfPresent(Double.self, forKey: .speechSpeed) ?? d.speechSpeed
         approvalPolicy = try c.decodeIfPresent(ApprovalPolicy.self, forKey: .approvalPolicy) ?? d.approvalPolicy

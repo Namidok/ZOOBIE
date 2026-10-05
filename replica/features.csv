@@ -1,0 +1,23 @@
+feature,area,priority,original,clone,notes
+Hold control+option to talk,input,must,yes,yes,
+Live transcript while talking,input,must,yes,yes,ZOOBIE transcribes on-device; Clicky streams to a paid cloud service
+Talking again interrupts the reply,input,should,yes,yes,
+Push-to-talk detected with a listen-only event tap,input,should,yes,yes,built 2026-10-04: ModifierHoldMonitor taps first and falls back to NSEvent monitors
+Cloud transcription with fallback providers,input,could,yes,skip,paid cloud services; the user wants free and local
+Replies spoken sentence by sentence,output,must,yes,yes,ZOOBIE uses a free local voice; Clicky a paid cloud one
+Reply text and waveform next to the cursor,output,should,yes,yes,built 2026-10-04: on by default (Settings: Show replies next to the cursor); the notch no longer repeats them
+Cursor buddy follows the mouse,overlay,must,yes,yes,
+Buddy hidden when idle and shown during a request,overlay,should,yes,yes,the showBuddy setting
+Pointer flies along a curved path,overlay,could,yes,yes,already in ZOOBIE: quadratic Bezier arc in BuddyOverlay
+Screenshot sent with every question,vision,could,yes,skip,user chose no screen vision; the local brain reads screen text only when asked
+Pointer flies to the element the answer names,vision,could,yes,partial,ZOOBIE points at text lines when the request is about the screen
+Pointing across several monitors,vision,could,yes,skip,user chose no screen vision
+Menu bar icon with a floating panel,ui,must,yes,yes,ZOOBIE: chat window from the menu bar icon or control+option+space (replaced the notch 2026-10-04)
+Model picker,ui,should,yes,yes,
+Permission setup,ui,must,yes,yes,ZOOBIE: onboarding window
+Remembers the conversation,brain,must,yes,yes,
+API keys kept off the device by a proxy,infra,could,yes,skip,the local brain needs no key; Claude's key is in the Keychain
+Usage analytics,infra,could,yes,skip,not wanted: privacy
+Feedback DM button,ui,could,yes,skip,personal app
+Chat window with a sidebar of agents and their conversations,ui,should,yes,yes,from the newer Hey Clicky app (user's screenshots in replica/screens/clicky-app-*.png); built 2026-10-04 in the noir theme
+Click-to-talk mic button in the chat,input,should,yes,yes,built 2026-10-04

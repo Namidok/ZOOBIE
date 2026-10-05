@@ -30,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         installEditMenu()
         if !AXIsProcessTrusted() {
-            // No system prompt here: onboarding asks in context, and afterwards the notch shows a setup note.
+            // No system prompt here: onboarding asks in context, and afterwards the chat window shows a setup note.
             // Event monitors installed before trust is granted stay deaf; reinstall once it is.
             accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] timer in
                 MainActor.assumeIsolated {
@@ -41,7 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         controller.openOnboarding = { [weak self] in
-            self?.controller.notch.collapse()
+            self?.controller.chat.close()
             self?.onboarding.show()
         }
         controller.start()
@@ -74,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func togglePanel() {
-        controller.notch.toggle(tab: .settings)
+        controller.chat.toggle()
     }
 }
 
@@ -94,6 +94,18 @@ final class ClosureMenuItem: NSMenuItem {
 }
 
 MainActor.assumeIsolated {
+    DS.Fonts.register()
+    #if DEBUG
+    if let flag = CommandLine.arguments.firstIndex(of: "--render-previews"), flag + 1 < CommandLine.arguments.count {
+        let directory = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+        try! DesignPreviews.render(to: directory)
+        _ = NSApplication.shared
+        let controller = CompanionController()
+        controller.loadPreviewConversation()
+        try! ChatWindowController.renderPreviews(controller: controller, to: directory)
+        exit(0)
+    }
+    #endif
     let app = NSApplication.shared
     let delegate = AppDelegate() // NSApplication holds its delegate weakly; this local lives until run() returns
     app.delegate = delegate

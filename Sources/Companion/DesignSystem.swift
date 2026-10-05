@@ -1,39 +1,67 @@
 import AppKit
+import CoreText
 import SwiftUI
 
-/// ZOOBIE's design tokens — "dark mode simple anime": matte black surfaces, soft charcoal borders and
-/// warm amber accents. Shared by the notch, pointer, cards, settings and onboarding.
+/// ZOOBIE's design tokens — "pixel": the specialists' pixel-art avatars as a UI. Deep navy and slate
+/// surfaces, hologram-cyan glow, LED green, dithered checker textures, notched pixel frames and a pixel
+/// font (Jersey 10) for titles. Colours are sampled from img/*.png; the values mirror replica/design/tokens.json
+/// (check changes with the contrast script there: 0 AA failures).
 enum DS {
     enum Colors {
-        static let background = Color(hex: 0x0A0A0B)
-        static let surface1 = Color(hex: 0x121214)
-        static let surface2 = Color(hex: 0x19191C)
-        static let surface3 = Color(hex: 0x232327)
-        static let borderSubtle = Color(hex: 0x2A2A2F)
-        static let borderStrong = Color(hex: 0x3B3B42)
+        static let background = Color(hex: 0x060D24)
+        static let surface1 = Color(hex: 0x0C1733)
+        static let surface2 = Color(hex: 0x13234A)
+        static let surface3 = Color(hex: 0x1B2F5C)
+        static let borderSubtle = Color(hex: 0x24375C)
+        static let borderStrong = Color(hex: 0x5E7E96)
+        /// The avatars' frame and backdrop blue, for textures.
+        static let slate = Color(hex: 0x7595AA)
 
-        static let textPrimary = Color(hex: 0xEFECE6)
-        static let textSecondary = Color(hex: 0xA9A39B)
-        static let textTertiary = Color(hex: 0x6E6962)
+        static let textPrimary = Color(hex: 0xE6F4F8)
+        static let textSecondary = Color(hex: 0xA7C0CF)
+        static let textTertiary = Color(hex: 0x86A3B8)
 
-        static let accent = Color(hex: 0xF5A524)
-        static let accentBright = Color(hex: 0xFFC46B)
-        static let accentDeep = Color(hex: 0xD97706)
-        static let success = Color(hex: 0x86C98A)
-        static let warning = Color(hex: 0xF5A524)
-        static let danger = Color(hex: 0xEF5B5B)
-        /// Code blocks: near-black with crisp off-white text.
-        static let codeBackground = Color(hex: 0x060607)
-        static let codeText = Color(hex: 0xF4F1EA)
+        /// Hologram cyan: the glowing data text in the avatars.
+        static let accent = Color(hex: 0x8FE6F2)
+        static let accentBright = Color(hex: 0xC9F6FB)
+        static let accentDeep = Color(hex: 0x3E8FA6)
+        /// Text and icons on an accent fill.
+        static let onAccent = Color(hex: 0x04122A)
+        /// LED green, like Scrapeman's headset light.
+        static let success = Color(hex: 0xA4F9BB)
+        static let warning = Color(hex: 0xF2C66D)
+        static let danger = Color(hex: 0xFF7A7A)
+        /// Code blocks: the deepest navy with crisp off-white text.
+        static let codeBackground = Color(hex: 0x030817)
+        static let codeText = Color(hex: 0xE6F4F8)
     }
 
+    /// Pixel frames have notched corners instead of round ones; these are the step sizes.
     enum Radius {
-        static let small: CGFloat = 6
-        static let medium: CGFloat = 10
-        static let large: CGFloat = 14
+        static let small: CGFloat = 2
+        static let medium: CGFloat = 3
+        static let large: CGFloat = 4
     }
 
-    static let accentGradient = LinearGradient(colors: [Colors.accentBright, Colors.accentDeep], startPoint: .topLeading, endPoint: .bottomTrailing)
+    enum Fonts {
+        /// Jersey 10 (SIL OFL, bundled in Resources/fonts) for titles, names and labels: chunky 16-bit
+        /// letters with a clear Z for ZOOBIE. It's condensed, so it's drawn a fifth larger than `size`.
+        /// One weight only — `weight` is ignored rather than faked. Body text stays in the system font.
+        static func pixel(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+            .custom("Jersey 10", size: size * 1.2)
+        }
+
+        /// Registers the bundled pixel font for this process. Call once at launch.
+        static func register() {
+            var url = Bundle.main.url(forResource: "Jersey10-Regular", withExtension: "ttf", subdirectory: "fonts")
+            #if DEBUG
+            if url == nil { url = URL(fileURLWithPath: "Resources/fonts/Jersey10-Regular.ttf") } // `swift run` has no bundle
+            #endif
+            if let url { CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil) }
+        }
+    }
+
+    static let accentGradient = LinearGradient(colors: [Colors.accentBright, Colors.accent], startPoint: .top, endPoint: .bottom)
     static let glow = Colors.accent
 }
 
@@ -47,17 +75,73 @@ extension Color {
     }
 }
 
+// MARK: - Pixel shapes and textures
+
+/// A rectangle whose corners are cut in a two-step staircase, like a sprite frame. `step` is the size of
+/// one stair (DS.Radius values); insettable, so `strokeBorder` draws crisp pixel borders.
+struct PixelRect: InsettableShape {
+    var step: CGFloat = DS.Radius.medium
+    var insetAmount: CGFloat = 0
+
+    func path(in rect: CGRect) -> Path {
+        let r = rect.insetBy(dx: insetAmount, dy: insetAmount)
+        let s = min(step, r.width / 4, r.height / 4)
+        guard s > 0 else { return Path(r) }
+        var p = Path()
+        p.move(to: CGPoint(x: r.minX + 2 * s, y: r.minY))
+        p.addLines([
+            CGPoint(x: r.maxX - 2 * s, y: r.minY), CGPoint(x: r.maxX - 2 * s, y: r.minY + s), CGPoint(x: r.maxX - s, y: r.minY + s),
+            CGPoint(x: r.maxX - s, y: r.minY + 2 * s), CGPoint(x: r.maxX, y: r.minY + 2 * s),
+            CGPoint(x: r.maxX, y: r.maxY - 2 * s), CGPoint(x: r.maxX - s, y: r.maxY - 2 * s), CGPoint(x: r.maxX - s, y: r.maxY - s),
+            CGPoint(x: r.maxX - 2 * s, y: r.maxY - s), CGPoint(x: r.maxX - 2 * s, y: r.maxY),
+            CGPoint(x: r.minX + 2 * s, y: r.maxY), CGPoint(x: r.minX + 2 * s, y: r.maxY - s), CGPoint(x: r.minX + s, y: r.maxY - s),
+            CGPoint(x: r.minX + s, y: r.maxY - 2 * s), CGPoint(x: r.minX, y: r.maxY - 2 * s),
+            CGPoint(x: r.minX, y: r.minY + 2 * s), CGPoint(x: r.minX + s, y: r.minY + 2 * s), CGPoint(x: r.minX + s, y: r.minY + s),
+            CGPoint(x: r.minX + 2 * s, y: r.minY + s),
+        ])
+        p.closeSubpath()
+        return p
+    }
+
+    func inset(by amount: CGFloat) -> PixelRect {
+        var copy = self
+        copy.insetAmount += amount
+        return copy
+    }
+}
+
+/// The avatars' dithered checkerboard: alternating cells of two colours, as a background texture.
+struct DitherPattern: View {
+    var cell: CGFloat = 2
+    var color: Color = DS.Colors.slate
+    var opacity: Double = 0.07
+
+    var body: some View {
+        Canvas { context, size in
+            let columns = Int(size.width / cell) + 1, rows = Int(size.height / cell) + 1
+            var path = Path()
+            for row in 0..<rows {
+                for column in stride(from: row % 2, to: columns, by: 2) {
+                    path.addRect(CGRect(x: CGFloat(column) * cell, y: CGFloat(row) * cell, width: cell, height: cell))
+                }
+            }
+            context.fill(path, with: .color(color.opacity(opacity)))
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 // MARK: - Surfaces
 
-/// The standard ZOOBIE surface: near-black, hairline border, soft shadow.
+/// The standard ZOOBIE surface: navy panel with a notched slate pixel frame.
 struct DSSurface: ViewModifier {
     var radius: CGFloat = DS.Radius.large
 
     func body(content: Content) -> some View {
         content
-            .background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(DS.Colors.surface1.opacity(0.97)))
-            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(DS.Colors.borderSubtle))
+            .background(PixelRect(step: radius).fill(DS.Colors.surface1.opacity(0.97)))
+            .clipShape(PixelRect(step: radius))
+            .overlay(PixelRect(step: radius).strokeBorder(DS.Colors.borderSubtle, lineWidth: 2))
     }
 }
 
@@ -81,29 +165,39 @@ struct DSButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: compact ? 11 : 12, weight: .semibold))
+            .font(DS.Fonts.pixel(compact ? 12 : 13))
             .foregroundStyle(foreground)
             .padding(.horizontal, compact ? 9 : 12)
             .padding(.vertical, compact ? 4 : 6)
-            .background(RoundedRectangle(cornerRadius: DS.Radius.small, style: .continuous).fill(background(pressed: configuration.isPressed)))
-            .overlay(RoundedRectangle(cornerRadius: DS.Radius.small, style: .continuous).strokeBorder(kind == .secondary ? DS.Colors.borderStrong : .clear))
+            .background(PixelRect(step: DS.Radius.small).fill(background(pressed: configuration.isPressed)))
+            .overlay(PixelRect(step: DS.Radius.small).strokeBorder(border, lineWidth: 2))
+            .offset(y: configuration.isPressed ? 1 : 0) // pressed buttons sink a pixel
             .contentShape(Rectangle())
             .dsPointerOnHover()
     }
 
     private var foreground: Color {
         switch kind {
-        case .primary: return Color(hex: 0x1A1205) // dark text on amber reads crisply
-        case .destructive: return .white
+        case .primary: return DS.Colors.onAccent
+        case .destructive: return DS.Colors.danger
         case .secondary: return DS.Colors.textPrimary
         case .ghost: return DS.Colors.textSecondary
+        }
+    }
+
+    private var border: Color {
+        switch kind {
+        case .primary: return DS.Colors.accentBright
+        case .secondary: return DS.Colors.borderStrong
+        case .destructive: return DS.Colors.danger.opacity(0.75)
+        case .ghost: return .clear
         }
     }
 
     private func background(pressed: Bool) -> Color {
         switch kind {
         case .primary: return pressed ? DS.Colors.accentDeep : DS.Colors.accent
-        case .destructive: return DS.Colors.danger.opacity(pressed ? 0.75 : 0.9)
+        case .destructive: return DS.Colors.danger.opacity(pressed ? 0.22 : 0.1)
         case .secondary: return pressed ? DS.Colors.surface3 : DS.Colors.surface2
         case .ghost: return pressed ? DS.Colors.surface2 : .clear
         }
@@ -120,11 +214,11 @@ struct DSSegmented<Value: Hashable>: View {
             ForEach(options, id: \.0) { value, title in
                 Button { selection = value } label: {
                     Text(title)
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(DS.Fonts.pixel(12))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 5)
-                        .foregroundStyle(selection == value ? Color(hex: 0x1A1205) : DS.Colors.textSecondary)
-                        .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(selection == value ? DS.Colors.accent : .clear))
+                        .foregroundStyle(selection == value ? DS.Colors.onAccent : DS.Colors.textSecondary)
+                        .background(PixelRect(step: DS.Radius.small).fill(selection == value ? DS.Colors.accent : .clear))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -132,62 +226,91 @@ struct DSSegmented<Value: Hashable>: View {
             }
         }
         .padding(2)
-        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(DS.Colors.surface2))
-        .animation(.easeOut(duration: 0.15), value: selection)
+        .background(PixelRect(step: DS.Radius.small).fill(DS.Colors.surface2))
+        .overlay(PixelRect(step: DS.Radius.small).strokeBorder(DS.Colors.borderSubtle, lineWidth: 2))
+        .animation(.easeOut(duration: 0.12), value: selection)
     }
 }
 
-/// A small uppercase section label.
+/// A small uppercase section label in the pixel font.
 struct DSSectionLabel: View {
     let text: String
     var body: some View {
         Text(text.uppercased())
-            .font(.system(size: 10, weight: .semibold))
-            .tracking(0.6)
+            .font(DS.Fonts.pixel(11))
+            .tracking(1)
             .foregroundStyle(DS.Colors.textTertiary)
     }
 }
 
 // MARK: - Brand
 
-/// The ZOOBIE pointer: a rounded cursor-like triangle whose tip is the rect's top-left corner.
+/// The ZOOBIE pointer: an 8-bit arrow cursor drawn from a pixel mask. Its tip is the rect's top-left
+/// corner, so the tip lands exactly where it points.
 struct PointerShape: Shape {
+    /// One string per row; "#" is a filled pixel.
+    static let mask = [
+        "#.........",
+        "##........",
+        "###.......",
+        "####......",
+        "#####.....",
+        "######....",
+        "#######...",
+        "########..",
+        "#########.",
+        "##########",
+        "######....",
+        "###.###...",
+        "##..###...",
+        "#....###..",
+        ".....###..",
+        "......##..",
+    ]
+
     func path(in rect: CGRect) -> Path {
+        let rows = Self.mask.count, columns = Self.mask[0].count
+        let pixel = min(rect.width / CGFloat(columns), rect.height / CGFloat(rows))
         var path = Path()
-        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.34, y: rect.minY + rect.height * 0.74))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + rect.height * 0.7))
-        path.closeSubpath()
+        for (row, line) in Self.mask.enumerated() {
+            // One rect per run of filled pixels, so each row is a single solid bar.
+            var start: Int?
+            for (column, character) in (line + ".").enumerated() {
+                if character == "#" { if start == nil { start = column } } else if let begin = start {
+                    path.addRect(CGRect(x: rect.minX + CGFloat(begin) * pixel, y: rect.minY + CGFloat(row) * pixel,
+                                        width: CGFloat(column - begin) * pixel, height: pixel))
+                    start = nil
+                }
+            }
+        }
         return path
     }
 }
 
-/// The glowing pointer as a standalone mark (onboarding, panel header).
+/// The glowing pointer as a standalone mark (sidebar, onboarding).
 struct ZoobieMark: View {
     var size: CGFloat = 22
     var body: some View {
         PointerShape()
             .fill(DS.accentGradient)
-            .frame(width: size * 0.8, height: size)
-            .shadow(color: DS.glow.opacity(0.8), radius: size * 0.35)
+            .frame(width: size * 0.63, height: size)
+            .shadow(color: DS.Colors.onAccent, radius: 0, x: 1, y: 1) // a dark pixel edge, like a sprite outline
+            .shadow(color: DS.glow.opacity(0.75), radius: size * 0.3)
     }
 }
 
 enum MenuBarIcon {
-    /// The pointer glyph as a template image, so macOS tints it for light and dark menu bars.
+    /// The pixel pointer as a template image, so macOS tints it for light and dark menu bars.
     static func image() -> NSImage {
-        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { rect in
-            let glyph = CGRect(x: 4, y: 2, width: 11, height: 14)
-            let path = NSBezierPath()
-            path.move(to: CGPoint(x: glyph.minX, y: glyph.minY))
-            path.line(to: CGPoint(x: glyph.minX, y: glyph.maxY))
-            path.line(to: CGPoint(x: glyph.minX + glyph.width * 0.34, y: glyph.minY + glyph.height * 0.74))
-            path.line(to: CGPoint(x: glyph.maxX, y: glyph.minY + glyph.height * 0.7))
-            path.close()
-            path.lineJoinStyle = .round
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { _ in
+            let pixel: CGFloat = 1
+            let origin = CGPoint(x: 4, y: 1)
             NSColor.black.setFill()
-            path.fill()
+            for (row, line) in PointerShape.mask.enumerated() {
+                for (column, character) in line.enumerated() where character == "#" {
+                    NSRect(x: origin.x + CGFloat(column) * pixel, y: origin.y + CGFloat(row) * pixel, width: pixel, height: pixel).fill()
+                }
+            }
             return true
         }
         image.isTemplate = true

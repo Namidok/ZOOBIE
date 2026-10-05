@@ -18,52 +18,61 @@ func drawIcon(size: CGFloat) -> NSBitmapImageRep {
     context.saveGState()
     context.setShadow(offset: CGSize(width: 0, height: -10), blur: 30, color: NSColor.black.withAlphaComponent(0.45).cgColor)
     context.addPath(tilePath)
-    context.setFillColor(NSColor(calibratedRed: 0.07, green: 0.08, blue: 0.09, alpha: 1).cgColor)
+    context.setFillColor(NSColor(srgbRed: 0.02, green: 0.05, blue: 0.14, alpha: 1).cgColor)
     context.fillPath()
     context.restoreGState()
 
-    // Background: dark gradient with a soft blue bloom behind the pointer.
+    // Background: deep navy with the avatars' dithered checker band and a hologram-cyan bloom.
     context.saveGState()
     context.addPath(tilePath)
     context.clip()
     let space = CGColorSpaceCreateDeviceRGB()
     let base = CGGradient(colorsSpace: space, colors: [
-        NSColor(calibratedRed: 0.09, green: 0.09, blue: 0.10, alpha: 1).cgColor,
-        NSColor(calibratedRed: 0.03, green: 0.03, blue: 0.035, alpha: 1).cgColor,
+        NSColor(srgbRed: 0.11, green: 0.18, blue: 0.36, alpha: 1).cgColor,
+        NSColor(srgbRed: 0.02, green: 0.05, blue: 0.14, alpha: 1).cgColor,
     ] as CFArray, locations: [0, 1])!
     context.drawLinearGradient(base, start: CGPoint(x: 512, y: 924), end: CGPoint(x: 512, y: 100), options: [])
+    context.setFillColor(NSColor(srgbRed: 0.46, green: 0.58, blue: 0.67, alpha: 0.10).cgColor)
+    let cell: CGFloat = 16
+    for row in 0..<Int(824 / cell) where (row / 6) % 2 == 0 { // checker bands, like the portraits' backdrops
+        for column in stride(from: row % 2, to: Int(824 / cell), by: 2) {
+            context.fill(CGRect(x: 100 + CGFloat(column) * cell, y: 100 + CGFloat(row) * cell, width: cell, height: cell))
+        }
+    }
     let bloom = CGGradient(colorsSpace: space, colors: [
-        NSColor(calibratedRed: 0.96, green: 0.65, blue: 0.14, alpha: 0.42).cgColor,
-        NSColor(calibratedRed: 0.96, green: 0.65, blue: 0.14, alpha: 0).cgColor,
+        NSColor(srgbRed: 0.56, green: 0.90, blue: 0.95, alpha: 0.35).cgColor,
+        NSColor(srgbRed: 0.56, green: 0.90, blue: 0.95, alpha: 0).cgColor,
     ] as CFArray, locations: [0, 1])!
-    context.drawRadialGradient(bloom, startCenter: CGPoint(x: 470, y: 540), startRadius: 0,
-                               endCenter: CGPoint(x: 470, y: 540), endRadius: 420, options: [])
+    context.drawRadialGradient(bloom, startCenter: CGPoint(x: 480, y: 540), startRadius: 0,
+                               endCenter: CGPoint(x: 480, y: 540), endRadius: 420, options: [])
     context.restoreGState()
 
-    // The pointer (tip at top-left, like the cursor buddy), with a glow.
-    let glyph = CGRect(x: 395, y: 270, width: 320, height: 420)
-    let outline = CGMutablePath()
-    outline.move(to: CGPoint(x: glyph.minX, y: glyph.maxY))
-    outline.addLine(to: CGPoint(x: glyph.minX, y: glyph.minY))
-    outline.addLine(to: CGPoint(x: glyph.minX + glyph.width * 0.34, y: glyph.maxY - glyph.height * 0.74))
-    outline.addLine(to: CGPoint(x: glyph.maxX, y: glyph.maxY - glyph.height * 0.7))
-    outline.closeSubpath()
-    // One solid shape with rounded corners: the triangle merged with its own rounded stroke.
-    let pointer = outline.union(outline.copy(strokingWithWidth: 40, lineCap: .round, lineJoin: .round, miterLimit: 10))
+    // The 8-bit arrow pointer (same mask as PointerShape in DesignSystem.swift), tip at top-left, glowing.
+    let mask = ["#.........", "##........", "###.......", "####......", "#####.....", "######....", "#######...", "########..",
+                "#########.", "##########", "######....", "###.###...", "##..###...", "#....###..", ".....###..", "......##.."]
+    let pixel: CGFloat = 30
+    let origin = CGPoint(x: 512 - 5 * pixel + 10, y: 512 + 8 * pixel) // top-left of the mask, in flipped-up coordinates
+    let arrow = CGMutablePath()
+    for (row, line) in mask.enumerated() {
+        for (column, character) in line.enumerated() where character == "#" {
+            arrow.addRect(CGRect(x: origin.x + CGFloat(column) * pixel, y: origin.y - CGFloat(row + 1) * pixel, width: pixel, height: pixel))
+        }
+    }
     context.saveGState()
-    context.setShadow(offset: .zero, blur: 70, color: NSColor(calibratedRed: 1.0, green: 0.68, blue: 0.2, alpha: 0.85).cgColor)
-    context.addPath(pointer)
-    context.setFillColor(NSColor(calibratedRed: 0.96, green: 0.65, blue: 0.14, alpha: 1).cgColor)
+    context.setShadow(offset: CGSize(width: 10, height: -10), blur: 0, color: NSColor(srgbRed: 0.02, green: 0.07, blue: 0.16, alpha: 1).cgColor)
+    context.addPath(arrow)
+    context.setFillColor(NSColor(srgbRed: 0.56, green: 0.90, blue: 0.95, alpha: 1).cgColor)
     context.fillPath()
     context.restoreGState()
     context.saveGState()
-    context.addPath(pointer)
+    context.setShadow(offset: .zero, blur: 60, color: NSColor(srgbRed: 0.56, green: 0.90, blue: 0.95, alpha: 0.8).cgColor)
+    context.addPath(arrow)
     context.clip()
     let fill = CGGradient(colorsSpace: space, colors: [
-        NSColor(calibratedRed: 1.0, green: 0.77, blue: 0.42, alpha: 1).cgColor,
-        NSColor(calibratedRed: 0.85, green: 0.47, blue: 0.02, alpha: 1).cgColor,
+        NSColor(srgbRed: 0.79, green: 0.96, blue: 0.98, alpha: 1).cgColor,
+        NSColor(srgbRed: 0.56, green: 0.90, blue: 0.95, alpha: 1).cgColor,
     ] as CFArray, locations: [0, 1])!
-    context.drawLinearGradient(fill, start: CGPoint(x: glyph.minX, y: glyph.maxY), end: CGPoint(x: glyph.maxX, y: glyph.minY), options: [])
+    context.drawLinearGradient(fill, start: CGPoint(x: 512, y: origin.y), end: CGPoint(x: 512, y: origin.y - 16 * pixel), options: [])
     context.restoreGState()
 
     // Hairline highlight on the tile edge.

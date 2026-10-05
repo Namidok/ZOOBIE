@@ -31,6 +31,10 @@ final class GlobalHotKey {
 
 /// Detects holding exactly ⌃⌥ (push-to-talk). A short delay and any key press in between
 /// cancel it, so ordinary ⌃⌥-shortcuts keep working. Requires Accessibility permission.
+///
+/// Listens through a listen-only CGEvent tap — it only observes, never changes or blocks a key —
+/// which catches modifier-only shortcuts more reliably while other apps are in front than AppKit's
+/// global monitors. Falls back to those monitors if the tap can't be created.
 @MainActor
 final class ModifierHoldMonitor {
     var onBegin: () -> Void = {}
@@ -40,11 +44,14 @@ final class ModifierHoldMonitor {
     private let required: NSEvent.ModifierFlags = [.control, .option]
     private let holdDelay: TimeInterval = 0.22
     private var monitors: [Any] = []
+    private var tap: CFMachPort?
+    private var tapSource: CFRunLoopSource?
     private var pending: DispatchWorkItem?
     private(set) var isActive = false
 
     func start() {
         stop()
+        if startEventTap() { return }
         let flags: (NSEvent) -> Void = { [weak self] event in self?.flagsChanged(event.modifierFlags) }
         let key: (NSEvent) -> Void = { [weak self] _ in self?.keyPressed() }
         monitors = [
@@ -58,6 +65,51 @@ final class ModifierHoldMonitor {
     func stop() {
         monitors.forEach(NSEvent.removeMonitor)
         monitors = []
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+        }
+        if let tapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), tapSource, .commonModes) }
+        tap = nil
+        tapSource = nil
+    }
+
+    /// Without Accessibility permission this fails; the app calls `start()` again once it's granted.
+    private func startEventTap() -> Bool {
+        let mask = CGEventMask(1 << CGEventType.flagsChanged.rawValue) | CGEventMask(1 << CGEventType.keyDown.rawValue)
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly, eventsOfInterest: mask,
+            callback: { _, type, event, owner in
+                // The tap's run loop source is on the main run loop, so this runs on the main thread.
+                if let owner {
+                    let monitor = Unmanaged<ModifierHoldMonitor>.fromOpaque(owner).takeUnretainedValue()
+                    MainActor.assumeIsolated { monitor.handle(type, event) }
+                }
+                return Unmanaged.passUnretained(event)
+            },
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else { return false }
+        let source = CFMachPortCreateRunLoopSource(nil, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        self.tap = tap
+        tapSource = source
+        return true
+    }
+
+    private func handle(_ type: CGEventType, _ event: CGEvent) {
+        switch type {
+        case .flagsChanged:
+            // CGEventFlags and NSEvent.ModifierFlags share the device-independent modifier bits.
+            flagsChanged(NSEvent.ModifierFlags(rawValue: UInt(event.flags.rawValue)))
+        case .keyDown:
+            keyPressed()
+        case .tapDisabledByTimeout, .tapDisabledByUserInput:
+            // macOS pauses a tap that it thinks is stuck; switch it straight back on.
+            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+        default:
+            break
+        }
     }
 
     /// Aborts a pending or active hold without submitting (e.g. ⌃⌥Space was pressed instead).
@@ -163,16 +215,19 @@ final class SpeechInput {
         isRunning = true
     }
 
-    /// Stops recording and waits briefly for the final transcription.
+    /// Stops recording and waits briefly for the final transcription. The live partial result is
+    /// almost always complete already, so it waits only 0.4 s for the final one (1.2 s if nothing
+    /// was heard yet) — every bit of this wait is added to the reply.
     func stop() async -> String {
         guard isRunning else { return "" }
         isRunning = false
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         request?.endAudio()
+        let wait = transcript.isEmpty ? 1.2 : 0.4
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             finalWaiter = continuation
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.resumeWaiter() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in self?.resumeWaiter() }
         }
         task?.cancel()
         task = nil

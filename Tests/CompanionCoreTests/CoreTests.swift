@@ -9,7 +9,9 @@ import Testing
         let config = try JSONDecoder().decode(CompanionConfig.self, from: Data(json.utf8))
         #expect(config.chatModel == "qwen3:8b")
         #expect(config.speakReplies == false)
-        #expect(config.voice == "bf_emma")
+        #expect(config.voice == "af_heart")
+        #expect(config.keepAlive == "-1m")
+        #expect(config.captionsAtCursor) // replies next to the cursor, like Clicky
         #expect(config.approvalPolicy == .risky)
         #expect(config.visionMode == .auto)
         #expect(config.ollamaURL.absoluteString == "http://127.0.0.1:11434")
@@ -122,6 +124,22 @@ import Testing
         #expect(final.code == [CodeSnippet(language: "bash", code: "ls")])
     }
 
+    @Test func firstSentenceSpeaksItsOpeningClauseEarly() {
+        let full = "A process is a running program, with its own memory. Threads share it, though."
+        var previous: [NarrationStep] = []
+        for end in full.indices {
+            let steps = ReplyParsing.narration(from: String(full[..<end]), final: false).steps
+            #expect(Array(steps.prefix(previous.count)) == previous)
+            previous = steps
+        }
+        let steps = ReplyParsing.narration(from: full, final: true).steps.map(\.text)
+        // Only the first sentence splits, and only after four or more words.
+        #expect(steps == ["A process is a running program,", "with its own memory.", "Threads share it, though."])
+        #expect(ReplyParsing.narration(from: "Sure, done.", final: true).steps.map(\.text) == ["Sure, done."])
+        // The opening clause is ready as soon as the next word starts.
+        #expect(ReplyParsing.narration(from: "A process is a running program, w", final: false).steps.map(\.text) == ["A process is a running program,"])
+    }
+
     @Test func narrationReadsNumberedListsNaturally() {
         let steps = ReplyParsing.narration(from: "Here's how:\n1. Open your terminal.\n2. Run the command.", final: true).steps
         #expect(steps.map(\.text) == ["Here's how:", "Open your terminal.", "Run the command."])
@@ -165,9 +183,28 @@ import Testing
         #expect(!VisionRouting.shouldUseVision(mode: .auto, hasVisionModel: true, ocrCharacters: 5000, question: "fix this error"))
         #expect(!VisionRouting.shouldUseVision(mode: .always, hasVisionModel: false, ocrCharacters: 0, question: "look"))
     }
+
+    @Test func screenRoutingReadsTheScreenOnlyWhenAsked() {
+        for request in ["why won't this build?", "fix this error", "what's on my screen", "summarise this page", "Explain the selected code"] {
+            #expect(ScreenRouting.refersToScreen(request), "\(request)")
+        }
+        for request in ["next song", "resume my music on spotify", "open safari", "set a timer for 10 minutes",
+                        "remind me to call mom tomorrow at 6pm", "what's using port 3000?", "what's a closure in swift?"] {
+            #expect(!ScreenRouting.refersToScreen(request), "\(request)")
+        }
+    }
 }
 
 @Suite struct AgentTests {
+    @Test func detectsACallBeingWrittenButNotBracesInProse() {
+        #expect(ToolCallParser.isWritingCall(#"On it. {"name": "open_"#))
+        #expect(ToolCallParser.isWritingCall("Skipping.\n{ \"name\""))
+        #expect(ToolCallParser.isWritingCall("On it. <tool_call>"))
+        #expect(!ToolCallParser.isWritingCall("On it. {"))                        // too early to tell
+        #expect(!ToolCallParser.isWritingCall("Use a dictionary like {key: value} here"))
+        #expect(!ToolCallParser.isWritingCall("Here's the config.\n```json\n{\"name\": \"app\""))
+    }
+
     @Test func parsesModeprefix() {
         #expect(Prompts.parseMode("Agent: run the tests") == (true, "run the tests"))
         #expect(Prompts.parseMode("why does this fail?") == (false, "why does this fail?"))

@@ -13,8 +13,8 @@ public enum ClaudeError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .missingKey: return "No Claude API key yet. Add one in ZOOBIE’s Settings (hover the notch)."
-        case .unauthorized: return "Claude rejected the API key. Update it in ZOOBIE’s Settings (hover the notch)."
+        case .missingKey: return "No Claude API key yet. Add one in ZOOBIE’s Settings (menu bar icon › gear)."
+        case .unauthorized: return "Claude rejected the API key. Update it in ZOOBIE’s Settings (menu bar icon › gear)."
         case .noCredits: return "Your Anthropic API account is out of credits. Add credits at console.anthropic.com → Settings → Billing (a Claude.ai subscription doesn’t include API credits). Using the local model meanwhile."
         case .http(let code, let message): return "Claude returned HTTP \(code): \(message)"
         case .network(let error): return "Couldn't reach Claude: \(error.localizedDescription)"

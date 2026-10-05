@@ -94,7 +94,7 @@ private struct OnboardingView: View {
     private var progress: some View {
         HStack(spacing: 6) {
             ForEach(Step.allCases, id: \.self) { item in
-                Capsule()
+                PixelRect(step: DS.Radius.small)
                     .fill(item.rawValue <= stepIndex ? DS.Colors.accent : DS.Colors.surface3)
                     .frame(width: item == step ? 22 : 8, height: 6)
             }
@@ -199,7 +199,7 @@ private struct OnboardingView: View {
                             .textFieldStyle(.plain)
                             .font(.system(size: 12, design: .monospaced))
                             .padding(8)
-                            .background(RoundedRectangle(cornerRadius: DS.Radius.small).fill(DS.Colors.surface2))
+                            .background(PixelRect(step: DS.Radius.small).fill(DS.Colors.surface2))
                             .onSubmit(saveKey)
                         Button("Save", action: saveKey).buttonStyle(DSButtonStyle(kind: .primary, compact: true))
                     }
@@ -286,7 +286,7 @@ private struct OnboardingView: View {
 
     private func stepIcon(_ symbol: String, done: Bool) -> some View {
         ZStack {
-            Circle().fill(done ? DS.Colors.success.opacity(0.15) : DS.Colors.accent.opacity(0.15)).frame(width: 64, height: 64)
+            PixelRect(step: DS.Radius.large).fill(done ? DS.Colors.success.opacity(0.15) : DS.Colors.accent.opacity(0.15)).frame(width: 64, height: 64)
             Image(systemName: done ? "checkmark" : symbol)
                 .font(.system(size: 24, weight: .semibold))
                 .foregroundStyle(done ? DS.Colors.success : DS.Colors.accentBright)
@@ -321,7 +321,7 @@ private struct OnboardingView: View {
             .foregroundStyle(DS.Colors.textPrimary)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 8).fill(DS.Colors.surface2))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(DS.Colors.borderStrong))
+            .background(PixelRect(step: DS.Radius.medium).fill(DS.Colors.surface2))
+            .overlay(PixelRect(step: DS.Radius.medium).strokeBorder(DS.Colors.borderStrong))
     }
 }

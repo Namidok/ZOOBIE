@@ -50,14 +50,26 @@ final class AgentManager: ObservableObject {
         return custom.isEmpty ? Specialist.get(id).defaultName : custom
     }
 
-    /// The user's avatar for this specialist, if they've added one.
+    /// This specialist's avatar: the user's own from Application Support if they've added one, else the
+    /// one bundled with the app (Resources/avatars). Cached, since views ask on every redraw.
     func avatar(_ id: Specialist.ID) -> NSImage? {
-        for ext in ["png", "jpg", "jpeg", "heic", "webp"] {
-            let url = Self.avatarsDirectory.appendingPathComponent("\(id.rawValue).\(ext)")
-            if let image = NSImage(contentsOf: url) { return image }
+        if let cached = avatarCache[id] { return cached }
+        var found: NSImage?
+        for ext in ["png", "jpg", "jpeg", "heic", "webp"] where found == nil {
+            found = NSImage(contentsOf: Self.avatarsDirectory.appendingPathComponent("\(id.rawValue).\(ext)"))
         }
-        return nil
+        if found == nil, let url = Bundle.main.url(forResource: id.rawValue, withExtension: "png", subdirectory: "avatars") {
+            found = NSImage(contentsOf: url)
+        }
+        #if DEBUG
+        // `swift run` has no app bundle: use the repo's copy.
+        if found == nil { found = NSImage(contentsOfFile: "Resources/avatars/\(id.rawValue).png") }
+        #endif
+        if let found { avatarCache[id] = found }
+        return found
     }
+
+    private var avatarCache: [Specialist.ID: NSImage] = [:]
 
     // MARK: Status
 

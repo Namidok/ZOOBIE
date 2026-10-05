@@ -425,6 +425,16 @@ public enum ToolCallParser {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// True once a reply has started writing a call — a `<tool_call>` tag, or `{"name"` outside a code
+    /// block — usually right after its spoken acknowledgement. Other braces in prose don't count.
+    public static func isWritingCall(_ content: String) -> Bool {
+        if content.contains("<tool_call>") { return true }
+        let objects = jsonObjects(in: content)
+        guard let start = objects.openStart ?? objects.complete.first?.lowerBound, !isInsideCodeFence(content, at: start) else { return false }
+        let head = content[start...].filter { !$0.isWhitespace }
+        return head.hasPrefix("{\"name\"") || head.hasPrefix("{\"function\"")
+    }
+
     private static func isInsideCodeFence(_ text: String, at index: String.Index) -> Bool {
         text[..<index].split(separator: "\n", omittingEmptySubsequences: false)
             .filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix("```") }.count % 2 == 1
@@ -685,6 +695,9 @@ public enum AgentEvent: Sendable {
     case turnStarted
     /// The model's visible text for the current turn so far (replaces the previous value).
     case thinking(String)
+    /// The model started writing a tool call, so its text for this turn is final and can be spoken
+    /// while the call is still being written.
+    case callStarted
     /// An action waiting for the user's approval.
     case proposed(AgentAction)
     /// An action that runs without asking (harmless under the approval policy).
@@ -716,6 +729,23 @@ public struct AgentLoop: Sendable {
         self.policy = policy
     }
 
+    /// The local brain's tools: everything except Claude-only and specialist-only ones.
+    public static let tools = AgentTools.definitions(excluding: AgentTools.claudeOnly.union(AgentTools.specialistOnly))
+
+    private func messages(request: String, screen: String?, history: [ChatMessage]) -> [ChatMessage] {
+        let system = Prompts.assistant(workingDirectory: executor.workingDirectory, commandTimeout: Int(executor.timeout))
+        let userContent = screen.map { "\($0)\n\n\(request)" } ?? request
+        return [ChatMessage(role: .system, content: system)] + history + [ChatMessage(role: .user, content: userContent)]
+    }
+
+    /// Reads the system prompt, tools and `history` ahead of time (e.g. while the user is still
+    /// talking), so the next `run` with the same history only reads the new request.
+    /// Returns how many tokens that took (nil if Ollama couldn't be reached).
+    @discardableResult
+    public func prime(history: [ChatMessage] = []) async -> Int? {
+        await client.prime(model: model, messages: messages(request: "…", screen: nil, history: history), tools: Self.tools, options: options)
+    }
+
     /// Returns the final reply text ("" if stopped).
     @discardableResult
     public func run(
@@ -725,21 +755,24 @@ public struct AgentLoop: Sendable {
         confirm: @Sendable (AgentAction) async -> AgentDecision,
         emit: @Sendable (AgentEvent) async -> Void
     ) async throws -> String {
-        let system = Prompts.assistant(workingDirectory: executor.workingDirectory, commandTimeout: Int(executor.timeout))
-        let userContent = screen.map { "\($0)\n\n\(request)" } ?? request
-        var messages = [ChatMessage(role: .system, content: system)] + history + [ChatMessage(role: .user, content: userContent)]
+        var messages = messages(request: request, screen: screen, history: history)
         var nudgesLeft = 2
 
         for _ in 0..<maxSteps {
             await emit(.turnStarted)
             var content = ""
             var calls: [ToolCall] = []
-            for try await chunk in client.chat(model: model, messages: messages, tools: AgentTools.definitions(excluding: AgentTools.claudeOnly.union(AgentTools.specialistOnly)), options: options) {
+            var callStarted = false
+            for try await chunk in client.chat(model: model, messages: messages, tools: Self.tools, options: options) {
                 guard let message = chunk.message else { continue }
                 if let toolCalls = message.toolCalls { calls += toolCalls }
                 if !message.content.isEmpty {
                     content += message.content
                     await emit(.thinking(ToolCallParser.strippingCalls(content)))
+                    if !callStarted, ToolCallParser.isWritingCall(content) {
+                        callStarted = true
+                        await emit(.callStarted) // "On it." can play while the call is still being written
+                    }
                 }
             }
             try Task.checkCancellation()

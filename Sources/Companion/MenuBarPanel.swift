@@ -4,7 +4,7 @@ import SwiftUI
 
 // MARK: - View
 
-/// ZOOBIE's settings: status, shortcuts, brain, voice, approvals and permissions (shown in the notch's Settings tab).
+/// ZOOBIE's settings: status, shortcuts, brain, voice, approvals and permissions (shown from the chat window's gear button).
 struct MenuBarPanelView: View {
     @ObservedObject var controller: CompanionController
     @ObservedObject var buddy: BuddyModel
@@ -76,12 +76,12 @@ struct MenuBarPanelView: View {
             }
         }()
         return HStack(spacing: 5) {
-            Circle().fill(color).frame(width: 6, height: 6)
+            Rectangle().fill(color).frame(width: 6, height: 6)
             Text(text).font(.system(size: 11, weight: .medium)).foregroundStyle(DS.Colors.textSecondary)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
-        .background(Capsule().fill(DS.Colors.surface2))
+        .background(PixelRect(step: DS.Radius.small).fill(DS.Colors.surface2))
     }
 
     private var shortcuts: some View {
@@ -99,7 +99,7 @@ struct MenuBarPanelView: View {
                 .foregroundStyle(DS.Colors.textPrimary)
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)
-                .background(RoundedRectangle(cornerRadius: 4).fill(DS.Colors.surface3))
+                .background(PixelRect(step: DS.Radius.small).fill(DS.Colors.surface3))
             Text(label).font(.system(size: 11)).foregroundStyle(DS.Colors.textSecondary)
         }
     }
@@ -115,8 +115,8 @@ struct MenuBarPanelView: View {
             Button("Continue", action: openOnboarding).buttonStyle(DSButtonStyle(kind: .primary, compact: true))
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: DS.Radius.medium).fill(DS.Colors.accent.opacity(0.12)))
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.medium).strokeBorder(DS.Colors.accent.opacity(0.35)))
+        .background(PixelRect(step: DS.Radius.medium).fill(DS.Colors.accent.opacity(0.12)))
+        .overlay(PixelRect(step: DS.Radius.medium).strokeBorder(DS.Colors.accent.opacity(0.35)))
     }
 
     // MARK: Brain
@@ -154,7 +154,7 @@ struct MenuBarPanelView: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 12, design: .monospaced))
                     .padding(6)
-                    .background(RoundedRectangle(cornerRadius: DS.Radius.small).fill(DS.Colors.surface2))
+                    .background(PixelRect(step: DS.Radius.small).fill(DS.Colors.surface2))
                     .onSubmit(saveKey)
                 Button("Save", action: saveKey).buttonStyle(DSButtonStyle(kind: .primary, compact: true))
                 Button("Cancel") { editingKey = false; keyDraft = "" }.buttonStyle(DSButtonStyle(kind: .ghost, compact: true))
@@ -206,6 +206,7 @@ struct MenuBarPanelView: View {
             toggle("Speak answers to voice questions", \.speakReplies)
             toggle("Speak answers to typed questions", \.speakTypedReplies)
             toggle("Show the pointer when idle", \.showBuddy)
+            toggle("Show replies next to the cursor", \.captionsAtCursor)
         }
     }
 
@@ -253,7 +254,6 @@ struct MenuBarPanelView: View {
 
     private var footer: some View {
         HStack(spacing: 6) {
-            Button("History", action: controller.showHistory).buttonStyle(DSButtonStyle(kind: .ghost, compact: true))
             Button("Settings file") { NSWorkspace.shared.open(CompanionConfig.fileURL) }.buttonStyle(DSButtonStyle(kind: .ghost, compact: true))
             Spacer()
             Button("Quit ZOOBIE") { NSApp.terminate(nil) }.buttonStyle(DSButtonStyle(kind: .secondary, compact: true))
