@@ -4,7 +4,7 @@ A private, local-first desktop companion for macOS in the spirit of FRIDAY. It l
 
 ## Use
 
-ZOOBIE lives next to your cursor (a small pixel arrow) and in a **chat window that drops down from the notch**: ZOOBIE and its four specialists (Scrapeman, KMan, Zoobs, Adolf — avatars in `img/`) in a sidebar, the conversation beside it. Hover the notch to open it; it also drops down by itself while ZOOBIE works on a request. Ask it anything, or tell it to do something — it answers questions and **performs actions itself**.
+ZOOBIE lives next to your cursor (a small pixel arrow) and in a **chat window that drops down from the notch**: ZOOBIE and its four specialists (Scrapeman, KMan, Zoobs, Klaus — avatars in `img/`) in a sidebar, the conversation beside it. Hover the notch to open it; it also drops down by itself while ZOOBIE works on a request. Ask it anything, or tell it to do something — it answers questions and **performs actions itself**.
 
 | Input | What happens |
 |---|---|

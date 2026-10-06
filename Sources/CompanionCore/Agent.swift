@@ -797,6 +797,21 @@ public struct AgentLoop: Sendable {
         }
     }
 
+    private var toolNames: Set<String> {
+        Set(tools.compactMap { definition in
+            guard case .object(let wrapper) = definition, case .object(let function)? = wrapper["function"] else { return nil }
+            return function["name"]?.stringValue
+        })
+    }
+
+    /// What the user may call this agent ("Zoobs, …"), left out of web searches.
+    private var addressNames: [String] {
+        switch role {
+        case .assistant(let names): return ["ZOOBIE"] + names.values
+        case .specialist(let specialist, let name, _, _): return [name, specialist.defaultName]
+        }
+    }
+
     /// The JSON schemas sent with each request (none when they're described in the prompt).
     private var schemas: [JSONValue]? { toolsInPrompt ? nil : tools }
 
@@ -837,6 +852,19 @@ public struct AgentLoop: Sendable {
         // "agent: …" requests must reach a specialist; small models sometimes just say they will.
         let mustDelegate = request.hasPrefix(Prompts.delegationPrefix)
         var delegated = false
+
+        // Questions about now (events, weather, news, prices): search first and answer from the results.
+        if !mustDelegate, toolNames.contains("web_search"), let query = FreshInfo.query(for: request, names: addressNames) {
+            let search = AgentAction.webSearch(query)
+            await emit(.running(search))
+            let results = await executor.execute(search)
+            await emit(.output(search, results))
+            try Task.checkCancellation()
+            researched = true
+            if !results.hasPrefix("Error"), let last = messages.indices.last {
+                messages[last].content = FreshInfo.briefing(results: results) + "\n\n" + messages[last].content
+            }
+        }
 
         let tools = schemas
         for _ in 0..<maxSteps {

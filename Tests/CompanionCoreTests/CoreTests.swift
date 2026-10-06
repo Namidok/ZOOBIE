@@ -341,6 +341,21 @@ import Testing
         #expect(try String(contentsOfFile: done.reportPath!, encoding: .utf8).contains("# Monitors"))
     }
 
+    @Test func specialistsAskBeforeAddingToCalendarOrReminders() {
+        let client = OllamaClient(baseURL: URL(string: "http://127.0.0.1:1")!)
+        let executor = AgentExecutor(workingDirectory: "/tmp", timeout: 5)
+        let event = AgentAction.createEvent(title: "Show", start: .now, end: .now, location: nil)
+        let reminder = AgentAction.createReminder(title: "Food tour", due: nil, notes: nil)
+        let zoobie = AgentLoop(client: client, model: "m", options: .init(), executor: executor, maxSteps: 1)
+        let zoobs = AgentLoop(client: client, model: "m", options: .init(), executor: executor, maxSteps: 1,
+                              role: .specialist(Specialist.get(.schedule), name: "Zoobs", notebook: "", conversation: true))
+        #expect(!zoobie.needsApproval(event)) // the user said "remind me…" to ZOOBIE: just do it
+        #expect(!zoobie.needsApproval(reminder))
+        #expect(zoobs.needsApproval(event))   // an agent deciding by itself asks first
+        #expect(zoobs.needsApproval(reminder))
+        #expect(!zoobs.needsApproval(.webSearch("berlin events")))
+    }
+
     @Test func onlyRealReportsGetAFile() {
         #expect(!AgentRunStore.deservesFile("I'm sorry to hear that. Is there anything you'd like to talk about?"))
         #expect(!AgentRunStore.deservesFile(""))
