@@ -13,6 +13,8 @@ let package = Package(
         .executableTarget(name: "Bench", dependencies: ["CompanionCore"]),
         // Run via scripts/test.sh — it adds the Swift Testing paths the Command Line Tools need.
         .testTarget(name: "CompanionCoreTests", dependencies: ["CompanionCore"]),
+        // The app's own logic (push-to-talk, speech sessions) with fakes in place of the mic and keyboard.
+        .testTarget(name: "CompanionTests", dependencies: ["Companion"]),
     ],
     swiftLanguageModes: [.v5]
 )

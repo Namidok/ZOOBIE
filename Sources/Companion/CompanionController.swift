@@ -372,8 +372,11 @@ final class CompanionController: ObservableObject {
         Task {
             let text = await speechIn.stop()
             guard !text.isEmpty else {
-                buddy.setMode(.idle)
-                buddy.setCaption(nil)
+                // Nothing heard, or the user is already talking again and the words carry over.
+                if !speechIn.isRunning {
+                    buddy.setMode(.idle)
+                    buddy.setCaption(nil)
+                }
                 return
             }
             log.notice("latency: transcript \(released.duration(to: .now), privacy: .public) after release")

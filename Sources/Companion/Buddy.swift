@@ -285,6 +285,10 @@ enum DesignPreviews {
             ("buddy-thinking", { $0.mode = .thinking; $0.caption = "why won't this build?"; $0.captionStyle = .user }),
             ("buddy-speaking", { $0.mode = .speaking; $0.caption = "Line twelve says impot instead of import, so the compiler can't find Foundation." }),
             ("buddy-status", { $0.mode = .thinking; $0.caption = "▸ Open Safari"; $0.captionStyle = .status }),
+            // Edge cases: a very long sentence, accents and emoji, and a bubble flipped at the bottom-right edge.
+            ("buddy-long", { $0.mode = .speaking; $0.caption = String(repeating: "This sentence keeps going because the model rambled on about build settings, ", count: 4) + "end." }),
+            ("buddy-accents", { $0.mode = .listening; $0.levels = [0.3, 0.5, 0.7, 0.4, 0.6, 0.2, 0.5]; $0.caption = "Wie spät ist es in Zürich? Ça va très bien 🙂🎧"; $0.captionStyle = .user }),
+            ("buddy-flipped", { $0.mode = .speaking; $0.flipX = true; $0.flipY = true; $0.caption = "Click Download at the bottom right." }),
         ]
         for (name, configure) in states {
             let model = BuddyModel()

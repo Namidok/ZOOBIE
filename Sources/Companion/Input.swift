@@ -121,7 +121,7 @@ final class ModifierHoldMonitor {
         }
     }
 
-    private func flagsChanged(_ flags: NSEvent.ModifierFlags) {
+    func flagsChanged(_ flags: NSEvent.ModifierFlags) {
         if flags.intersection([.control, .option, .command, .shift]) == required {
             guard pending == nil, !isActive else { return }
             let work = DispatchWorkItem { [weak self] in
@@ -141,7 +141,7 @@ final class ModifierHoldMonitor {
         }
     }
 
-    private func keyPressed() {
+    func keyPressed() {
         // A key while ⌃⌥ is down means a shortcut, not push-to-talk.
         if pending != nil { cancelPending() }
     }
@@ -153,6 +153,20 @@ final class ModifierHoldMonitor {
 }
 
 // MARK: - Speech in
+
+/// One recording: the microphone feeding the recognizer. `Microphone` makes the real ones; tests use fakes.
+@MainActor
+protocol Recording: AnyObject {
+    /// Stops the microphone and marks the end of the audio. The final words may still arrive.
+    func stopAudio()
+    /// Stops recognition: no more results.
+    func cancel()
+}
+
+/// Starts a recording in a language; results (text, isFinal) and mic levels arrive on the main thread.
+typealias StartRecording = @MainActor (
+    _ locale: String, _ onResult: @escaping (String?, Bool) -> Void, _ onLevel: @escaping (Float) -> Void
+) throws -> Recording
 
 /// Push-to-talk transcription that never leaves the device (`requiresOnDeviceRecognition`).
 @MainActor
@@ -172,16 +186,39 @@ final class SpeechInput {
 
     var onPartial: (String) -> Void = { _ in }
     var onLevel: (Float) -> Void = { _ in }
-    private(set) var isRunning = false
+    var isRunning: Bool { current != nil }
 
     /// Recognition language: en-US normally, de-DE during German practice.
     var localeIdentifier = "en-US"
-    private var recognizer: SFSpeechRecognizer?
-    private let engine = AVAudioEngine()
-    private var request: SFSpeechAudioBufferRecognitionRequest?
-    private var task: SFSpeechRecognitionTask?
-    private var transcript = ""
-    private var finalWaiter: CheckedContinuation<Void, Never>?
+    private let startRecording: StartRecording
+    /// The recording the microphone feeds now.
+    private var current: Take?
+    /// The last recording, stopped and waiting for its final words.
+    private var finishing: Take?
+
+    /// One recording and its words. Each keeps its own, so a recording still finishing can't touch the next.
+    private final class Take {
+        var recording: Recording?
+        var transcript = ""
+        /// Words from a recording the user talked straight on from (released ⌃⌥ and held it again).
+        var carried = ""
+        /// Set when a new recording starts before this one finished: its words go there instead.
+        var continuedBy: Take?
+        var finalWaiter: CheckedContinuation<Void, Never>?
+
+        var text: String {
+            [carried, transcript].filter { !$0.isEmpty }.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        func resumeWaiter() {
+            finalWaiter?.resume()
+            finalWaiter = nil
+        }
+    }
+
+    init(startRecording: StartRecording? = nil) {
+        self.startRecording = startRecording ?? Microphone().record
+    }
 
     static func requestPermissions() async throws {
         let status = await withCheckedContinuation { continuation in
@@ -191,92 +228,139 @@ final class SpeechInput {
         guard await AVCaptureDevice.requestAccess(for: .audio) else { throw SpeechError.microphoneDenied }
     }
 
+    /// Starts listening. Already listening: nothing to do (the microphone takes only one tap).
+    /// If the last recording is still waiting for its final words, this one continues it.
     func start() throws {
-        if recognizer?.locale.identifier != localeIdentifier {
-            recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier))
+        guard current == nil else { return }
+        let take = Take()
+        take.recording = try startRecording(
+            localeIdentifier,
+            { [weak self, weak take] text, isFinal in
+                guard let self, let take else { return }
+                handle(text: text, isFinal: isFinal, in: take)
+            },
+            { [weak self] level in self?.onLevel(level) }
+        )
+        current = take
+        if let finishing {
+            finishing.continuedBy = take
+            finishing.resumeWaiter() // its latest words stand; they lead this recording's
         }
-        guard let recognizer, recognizer.supportsOnDeviceRecognition else { throw SpeechError.onDeviceUnavailable }
+    }
+
+    /// Stops recording and waits briefly for the final transcription. The live partial result is
+    /// almost always complete already, so it waits only 0.4 s for the final one (1.2 s if nothing
+    /// was heard yet) — every bit of this wait is added to the reply.
+    /// Returns "" when the user started talking again meanwhile: the words carry into that recording.
+    func stop() async -> String {
+        guard let take = current else { return "" }
+        current = nil
+        finishing = take
+        take.recording?.stopAudio()
+        let wait = take.transcript.isEmpty ? 1.2 : 0.4
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            take.finalWaiter = continuation
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { take.resumeWaiter() }
+        }
+        take.recording?.cancel()
+        if finishing === take { finishing = nil }
+        if let next = take.continuedBy {
+            next.carried = take.text
+            if next === current { onPartial(next.text) }
+            return ""
+        }
+        return take.text
+    }
+
+    func cancel() {
+        guard let take = current else { return }
+        current = nil
+        take.recording?.stopAudio()
+        take.recording?.cancel()
+        take.resumeWaiter()
+    }
+
+    private func handle(text: String?, isFinal: Bool, in take: Take) {
+        if let text, !text.isEmpty {
+            take.transcript = text
+            if take === current { onPartial(take.text) }
+        }
+        if isFinal { take.resumeWaiter() }
+    }
+}
+
+/// The real microphone and on-device recognizer. One audio engine serves every recording; a
+/// recording removes its tap in `stopAudio()`, before the next one can install its own.
+@MainActor
+final class Microphone {
+    private let engine = AVAudioEngine()
+    private var recognizer: SFSpeechRecognizer?
+
+    func record(locale: String, onResult: @escaping (String?, Bool) -> Void, onLevel: @escaping (Float) -> Void) throws -> Recording {
+        if recognizer?.locale.identifier != locale {
+            recognizer = SFSpeechRecognizer(locale: Locale(identifier: locale))
+        }
+        guard let recognizer, recognizer.supportsOnDeviceRecognition else { throw SpeechInput.SpeechError.onDeviceUnavailable }
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else { throw SpeechError.noMicrophone }
+        guard format.sampleRate > 0, format.channelCount > 0 else { throw SpeechInput.SpeechError.noMicrophone }
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.requiresOnDeviceRecognition = true
         request.shouldReportPartialResults = true
         request.addsPunctuation = true
         request.contextualStrings = ["Xcode", "Swift", "SwiftUI", "npm", "git", "Ollama", "Python", "TypeScript", "stack trace", "agent"]
-        self.request = request
-        transcript = ""
 
-        input.installTap(onBus: 0, bufferSize: 1024, format: format, block: Self.tapBlock(request: request, owner: self))
+        input.installTap(onBus: 0, bufferSize: 1024, format: format, block: Self.tapBlock(request: request, onLevel: onLevel))
         engine.prepare()
-        try engine.start()
-        task = recognizer.recognitionTask(with: request, resultHandler: Self.resultHandler(owner: self))
-        isRunning = true
-    }
-
-    /// Stops recording and waits briefly for the final transcription. The live partial result is
-    /// almost always complete already, so it waits only 0.4 s for the final one (1.2 s if nothing
-    /// was heard yet) — every bit of this wait is added to the reply.
-    func stop() async -> String {
-        guard isRunning else { return "" }
-        isRunning = false
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
-        request?.endAudio()
-        let wait = transcript.isEmpty ? 1.2 : 0.4
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            finalWaiter = continuation
-            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in self?.resumeWaiter() }
+        do {
+            try engine.start()
+        } catch {
+            input.removeTap(onBus: 0)
+            throw error
         }
-        task?.cancel()
-        task = nil
-        request = nil
-        return transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let task = recognizer.recognitionTask(with: request, resultHandler: Self.resultHandler(onResult))
+        return LiveRecording(engine: engine, request: request, task: task)
     }
 
-    func cancel() {
-        guard isRunning else { return }
-        isRunning = false
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
-        task?.cancel()
-        task = nil
-        request = nil
-        resumeWaiter()
-    }
+    private final class LiveRecording: Recording {
+        let engine: AVAudioEngine
+        let request: SFSpeechAudioBufferRecognitionRequest
+        let task: SFSpeechRecognitionTask
 
-    private func handle(text: String?, isFinal: Bool) {
-        if let text, !text.isEmpty {
-            transcript = text
-            if isRunning { onPartial(text) }
+        init(engine: AVAudioEngine, request: SFSpeechAudioBufferRecognitionRequest, task: SFSpeechRecognitionTask) {
+            self.engine = engine
+            self.request = request
+            self.task = task
         }
-        if isFinal { resumeWaiter() }
-    }
 
-    private func resumeWaiter() {
-        finalWaiter?.resume()
-        finalWaiter = nil
+        func stopAudio() {
+            engine.stop()
+            engine.inputNode.removeTap(onBus: 0)
+            request.endAudio()
+        }
+
+        func cancel() { task.cancel() }
     }
 
     // Built outside the main actor: these run on audio / recognition threads.
-    nonisolated private static func tapBlock(request: SFSpeechAudioBufferRecognitionRequest, owner: SpeechInput) -> AVAudioNodeTapBlock {
-        { [weak owner] buffer, _ in
+    nonisolated private static func tapBlock(request: SFSpeechAudioBufferRecognitionRequest, onLevel: @escaping (Float) -> Void) -> AVAudioNodeTapBlock {
+        { buffer, _ in
             request.append(buffer)
             guard let data = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return }
             var sum: Float = 0
             for i in 0..<Int(buffer.frameLength) { sum += data[i] * data[i] }
             let rms = sqrt(sum / Float(buffer.frameLength))
             let level = min(1, max(0, (20 * log10(max(rms, 1e-6)) + 50) / 40))
-            DispatchQueue.main.async { owner?.onLevel(level) }
+            DispatchQueue.main.async { onLevel(level) }
         }
     }
 
-    nonisolated private static func resultHandler(owner: SpeechInput) -> (SFSpeechRecognitionResult?, Error?) -> Void {
-        { [weak owner] result, error in
+    nonisolated private static func resultHandler(_ onResult: @escaping (String?, Bool) -> Void) -> (SFSpeechRecognitionResult?, Error?) -> Void {
+        { result, error in
             let text = result?.bestTranscription.formattedString
             let isFinal = (result?.isFinal ?? false) || error != nil
-            DispatchQueue.main.async { owner?.handle(text: text, isFinal: isFinal) }
+            DispatchQueue.main.async { onResult(text, isFinal) }
         }
     }
 }
