@@ -120,6 +120,11 @@ if let i = args.firstIndex(of: "--screen"), i + 1 < args.count {
     screenMode = args[i + 1]
     args.removeSubrange(i...i + 1)
 }
+var toolsInPrompt = false
+if let i = args.firstIndex(of: "--tools-in-prompt") {
+    toolsInPrompt = true
+    args.remove(at: i)
+}
 if args.first == "--dump" {
     // The exact system prompt and tools the local brain sends, for replaying requests by hand.
     let executor = AgentExecutor(workingDirectory: "~", timeout: 5)
@@ -154,12 +159,13 @@ let models = args.isEmpty ? ["qwen2.5-coder:7b"] : args
 for model in models {
     let thinks = installed.first { $0.name == model }?.supportsThinking == true
     let options = OllamaClient.Options(numCtx: 8192, temperature: 0.2, keepAlive: "-1m", think: thinks ? false : nil)
-    let loop = AgentLoop(client: client, model: model, options: options,
+    var loop = AgentLoop(client: client, model: model, options: options,
                          executor: AgentExecutor(workingDirectory: "~", timeout: 5), maxSteps: 3, policy: .always,
                          role: .assistant(specialistNames: [.jobs: "Scrapeman", .mentor: "KMan", .schedule: "Zoobs", .german: "Adolf"]))
+    loop.toolsInPrompt = toolsInPrompt
     let primeStart = Date()
     let primed = await loop.prime() ?? 0 // loads the model too, with the same context size as the requests
-    print("\n\(model) (screen: \(screenMode), \(budget) chars) — loaded and read the \(primed)-token prompt in \(seconds(Date().timeIntervalSince(primeStart)))")
+    print("\n\(model) (screen: \(screenMode), \(budget) chars\(toolsInPrompt ? ", tools in prompt" : "")) — loaded and read the \(primed)-token prompt in \(seconds(Date().timeIntervalSince(primeStart)))")
     print("request                                   first words      action     total  turns  result")
     var passed = 0
     for (index, scenario) in scenarios.enumerated() {

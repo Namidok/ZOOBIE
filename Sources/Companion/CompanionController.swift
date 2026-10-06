@@ -702,9 +702,11 @@ final class CompanionController: ObservableObject {
         let names = Dictionary(uniqueKeysWithValues: Specialist.ID.allCases.compactMap { id in
             config.agentNames[id.rawValue].map { (id, $0) }
         })
-        return AgentLoop(client: client, model: config.chatModel, options: options(for: config.chatModel),
-                         executor: executor, maxSteps: config.agentMaxSteps, policy: config.approvalPolicy,
-                         role: .assistant(specialistNames: names))
+        var loop = AgentLoop(client: client, model: config.chatModel, options: options(for: config.chatModel),
+                             executor: executor, maxSteps: config.agentMaxSteps, policy: config.approvalPolicy,
+                             role: .assistant(specialistNames: names))
+        loop.toolsInPrompt = true // Bench: 16/16 vs 15/16 with JSON schemas, and 30% fewer tokens to read
+        return loop
     }
 
     private func remember(question: String, answer: String) {

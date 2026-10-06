@@ -341,6 +341,12 @@ import Testing
         #expect(try String(contentsOfFile: done.reportPath!, encoding: .utf8).contains("# Monitors"))
     }
 
+    @Test func onlyRealReportsGetAFile() {
+        #expect(!AgentRunStore.deservesFile("I'm sorry to hear that. Is there anything you'd like to talk about?"))
+        #expect(!AgentRunStore.deservesFile(""))
+        #expect(AgentRunStore.deservesFile(String(repeating: "Internship at Siemens, Munich: apply by Nov 1. ", count: 20)))
+    }
+
     @Test func calendarScriptsUseStructuredDates() throws {
         let start = try #require(LocalDate.parse("2026-10-02T18:30"))
         let script = AppleAppScripts.createEvent(title: "Submit \"DSA\" A3", start: start, end: start.addingTimeInterval(3600), location: nil)

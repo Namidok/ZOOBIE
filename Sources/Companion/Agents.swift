@@ -285,7 +285,7 @@ final class AgentManager: ObservableObject {
         var finished: AgentRun?
         update(runID) { run in
             run.report = report
-            run.reportPath = report.isEmpty ? nil : store.writeReport(report, for: run)
+            run.reportPath = AgentRunStore.deservesFile(report) ? store.writeReport(report, for: run) : nil
             run.status = report.isEmpty ? .cancelled : .done
             run.finishedAt = Date()
             finished = run

@@ -74,6 +74,27 @@ public enum AgentTools {
              ["content": "The full Markdown notebook."], required: ["content"]),
     ]
 
+    /// The tools as one line each, for a model that writes its calls as text anyway: about a third
+    /// of the tokens of the JSON schemas, so the model reads its instructions faster.
+    public static func compactList(_ definitions: [JSONValue]) -> String {
+        definitions.compactMap { definition -> String? in
+            guard case .object(let wrapper) = definition, case .object(let function)? = wrapper["function"],
+                  let name = function["name"]?.stringValue, let description = function["description"]?.stringValue,
+                  case .object(let parameters)? = function["parameters"] else { return nil }
+            var required: [String] = []
+            if case .array(let names)? = parameters["required"] { required = names.compactMap(\.stringValue) }
+            var properties: [String: JSONValue] = [:]
+            if case .object(let found)? = parameters["properties"] { properties = found }
+            let optional = properties.keys.filter { !required.contains($0) }.sorted()
+            let arguments = required.map { $0 } + optional.map { $0 + "?" }
+            let details = (required + optional).compactMap { argument -> String? in
+                guard case .object(let property)? = properties[argument], let text = property["description"]?.stringValue else { return nil }
+                return "\(argument): \(text)"
+            }
+            return "- \(name)(\(arguments.joined(separator: ", "))): \(description)" + (details.isEmpty ? "" : " " + details.joined(separator: " "))
+        }.joined(separator: "\n")
+    }
+
     private static func tool(_ name: String, _ description: String, _ params: [String: String], required: [String]) -> JSONValue {
         let properties = params.mapValues { JSONValue.object(["type": .string("string"), "description": .string($0)]) }
         return .object([
@@ -749,6 +770,9 @@ public struct AgentLoop: Sendable {
     public var role: Role
     /// Awaited before every model turn — background agents use it to wait while the user talks to ZOOBIE.
     public var beforeTurn: (@Sendable () async -> Void)?
+    /// Describe the tools in the system prompt, one line each, instead of sending their JSON schemas.
+    /// Small local models write their calls as text either way; this reads in a third of the tokens.
+    public var toolsInPrompt = false
 
     public init(client: OllamaClient, model: String, options: OllamaClient.Options, executor: AgentExecutor, maxSteps: Int,
                 policy: ApprovalPolicy = .risky, role: Role = .assistant()) {
@@ -773,6 +797,9 @@ public struct AgentLoop: Sendable {
         }
     }
 
+    /// The JSON schemas sent with each request (none when they're described in the prompt).
+    private var schemas: [JSONValue]? { toolsInPrompt ? nil : tools }
+
     private func messages(request: String, screen: String?, history: [ChatMessage]) -> [ChatMessage] {
         let system: String
         switch role {
@@ -783,7 +810,8 @@ public struct AgentLoop: Sendable {
                                         workingDirectory: executor.workingDirectory, commandTimeout: Int(executor.timeout))
         }
         let userContent = screen.map { "\($0)\n\n\(request)" } ?? request
-        return [ChatMessage(role: .system, content: system)] + history + [ChatMessage(role: .user, content: userContent)]
+        let prompt = toolsInPrompt ? system + "\n\nYour tools:\n" + AgentTools.compactList(tools) : system
+        return [ChatMessage(role: .system, content: prompt)] + history + [ChatMessage(role: .user, content: userContent)]
     }
 
     /// Reads the system prompt, tools and `history` ahead of time (e.g. while the user is still
@@ -791,7 +819,7 @@ public struct AgentLoop: Sendable {
     /// Returns how many tokens that took (nil if Ollama couldn't be reached).
     @discardableResult
     public func prime(history: [ChatMessage] = []) async -> Int? {
-        await client.prime(model: model, messages: messages(request: "…", screen: nil, history: history), tools: tools, options: options)
+        await client.prime(model: model, messages: messages(request: "…", screen: nil, history: history), tools: schemas, options: options)
     }
 
     /// Returns the final reply text ("" if stopped).
@@ -810,7 +838,7 @@ public struct AgentLoop: Sendable {
         let mustDelegate = request.hasPrefix(Prompts.delegationPrefix)
         var delegated = false
 
-        let tools = self.tools
+        let tools = schemas
         for _ in 0..<maxSteps {
             await beforeTurn?()
             try Task.checkCancellation()

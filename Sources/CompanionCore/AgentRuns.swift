@@ -94,6 +94,12 @@ public struct AgentRunStore: Sendable {
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(run.id.uuidString).json"))
     }
 
+    /// Only a real report (research, a CV, a plan) gets a file; a short chat reply ("Hey", "Yes")
+    /// stays in the conversation, so ~/Documents/ZOOBIE doesn't fill with one-liners.
+    public static func deservesFile(_ report: String) -> Bool {
+        report.trimmingCharacters(in: .whitespacesAndNewlines).count >= 600
+    }
+
     /// Writes the report to ~/Documents/ZOOBIE/<date> <title>.md and returns its path.
     public func writeReport(_ report: String, for run: AgentRun) -> String? {
         try? FileManager.default.createDirectory(at: reportsDirectory, withIntermediateDirectories: true)
