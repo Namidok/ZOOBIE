@@ -430,7 +430,14 @@ final class CompanionController: ObservableObject {
         let current = generation
         isBusy = true
         buddy.setMode(.thinking)
+        let quick = isAgentRequest || focused != nil ? nil : QuickCommand.match(stripped)
         workTask = Task { [weak self] in
+            // Everyday commands need no model; if one fails, the model takes the request over.
+            if let quick, let self, !(quick.action?.needsApproval(under: config.approvalPolicy) ?? false),
+               await runQuick(quick, request: stripped, speak: speak) {
+                if generation == current { isBusy = false }
+                return
+            }
             let snapshot = await snapshotTask?.value
             guard let self, !Task.isCancelled else { return }
             if let focused {
@@ -448,6 +455,29 @@ final class CompanionController: ObservableObject {
             }
             if generation == current { isBusy = false }
         }
+    }
+
+    // MARK: Quick commands
+
+    /// Runs an everyday command without the model and says how it went. Returns false when the
+    /// action failed, so the model can work out what was meant.
+    private func runQuick(_ command: QuickCommand, request: String, speak: Bool) async -> Bool {
+        var output = ""
+        if let action = command.action {
+            log.notice("quick: \(action.title, privacy: .public) — \(action.detail, privacy: .public)")
+            status("▸ \(action.title)")
+            output = await makeLocalLoop().executor.execute(action)
+        }
+        guard !Task.isCancelled else { return true }
+        guard let reply = command.reply(to: output) else {
+            log.notice("quick command failed, asking the model: \(output, privacy: .public)")
+            return false
+        }
+        beginNarration(voiced: speak, snapshot: nil)
+        append(DisplayMessage(kind: .assistant, text: reply))
+        remember(question: request, answer: reply)
+        finishNarration(finalText: reply)
+        return true
     }
 
     // MARK: Claude
